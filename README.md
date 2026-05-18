@@ -4,6 +4,8 @@
 
 通过把 server 跑在一台 macOS 上 + Tailscale Funnel 暴露到公网，所有客户端走 `wss://` 主动出站，绕开 NAT 穿透。
 
+也支持用 [Cloudflare Quick Tunnel](#临时部署cloudflare-quick-tunnel无需远程机) 在当前这台电脑上临时跑（无远程机时的备选）。
+
 ## 架构
 
 ```
@@ -41,6 +43,37 @@ CHAT_SERVER=ws://127.0.0.1:8080 CHAT_NAME=dan npm run client
 ```
 
 emoo 和 dan 互发消息即可。
+
+## 临时部署：Cloudflare Quick Tunnel（无需远程机）
+
+暂时没有可保活的远程机时，可以用 Cloudflare 临时隧道把**当前这台电脑**上的 server 暴露到公网。零配置、不用账号，但每次重启 URL 都会变，仅适合临时玩。
+
+```bash
+brew install cloudflared
+
+# 终端 1：起 server
+npm start
+
+# 终端 2：起 tunnel
+cloudflared tunnel --url http://localhost:8080
+```
+
+cloudflared 启动后会打印一行：
+
+```
+Your quick Tunnel has been created! Visit it at ...
+https://<随机词>.trycloudflare.com
+```
+
+把这个 https 改成 `wss://<随机词>.trycloudflare.com`，就是客户端要用的 `CHAT_SERVER`。
+
+**注意事项**
+
+- URL 是一次性的：cloudflared 进程一停，下次重启会换一个新域名，要重新告诉朋友
+- server 和 tunnel 都跑在你这台电脑上 —— 关机 / 断网 / 睡眠都会断
+- 防止 macOS 自动睡眠：另起一个终端 `caffeinate -i &`，不需要时再 `kill` 掉
+- 停掉：在 server / tunnel 各自的终端 `Ctrl+C` 即可
+- Cloudflare 官方说明 Quick Tunnel 无 SLA，正式使用建议换成 named tunnel 或 Tailscale Funnel
 
 ## 部署到远程 macOS
 
