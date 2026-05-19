@@ -1,61 +1,44 @@
 <sub>**English** · [中文](README.zh-CN.md)</sub>
 
+# clichat
+
+A small command-line chat tool that looks like a 404 page from the outside.
+
+Everyone joining the same room number lands in the same chat. There's no GUI, no app, no login — just a terminal command.
+
 ```
-   _  _    ___  _  _
-  | || |  / _ \| || |
-  | || |_| | | | || |_
-  |__   _| | | |__   _|
-     | | | |_| |  | |
-     |_|  \___/   |_|
-       NOT  FOUND
-```
-
-# clichat — `HTTP/1.1 404 Not Found`
-
-> A covert WebSocket chat that masquerades as a 404 page.
-> RFC 7231 §6.5.4 on the outside, RFC 6455 on the inside.
-
-`stdin → stdout` only. No GUI, no electron, no telemetry. If your sysadmin greps your packet capture, all they see is `wss://` to a Cloudflare edge.
-
-```sh
 $ clichat 404
-HTTP/1.1 404 Not Found
-The requested URL /chat/404 was not found on this server.
-
-* GET /404 → joined ghost path "404", uid=emoo
-[14:23] <neighbor> boss out of range
-[14:23] <emoo> ack, milk-tea ballot incoming
+* connected to room "404" as emoo
+[14:23] <neighbor> boss is out
+[14:23] <emoo> noted, milk-tea poll incoming
 > _
 ```
 
 ---
 
-## tl;dr
+## How it works
 
-Two binaries. That's it.
+There are two commands:
 
-| binary | run by | does |
+| Command | Who runs it | What it does |
 | --- | --- | --- |
-| `clichat-server` | sysop (one human) | spawn local ws server + cloudflared quick tunnel; emit a `wss://` |
-| `clichat <path>` | every peer | open ws to `${CHAT_SERVER}?room=<path>&name=<uid>` |
+| `clichat-server` | One person, once | Starts the chat server and exposes it through Cloudflare Tunnel. Prints a URL to share. |
+| `clichat <room>` | Everyone | Joins the given room number. Same number = same chat. |
 
-**Same `<path>` ⇒ same broadcast domain.** Different paths are isolated. Multiple cells can coexist.
+Different room numbers are isolated — people in room `101` can't see room `202`.
 
 ---
 
-## install (once)
+## Install
 
 ```sh
 git clone <repo> clichat
 cd clichat
 npm install
-npm link            # symlinks ./client.js → /usr/local/bin/clichat
-                    #          ./bin/clichat-server.js → ...-server
+npm link            # makes `clichat` and `clichat-server` available globally
 ```
 
-`npm link` doesn't need sudo and is reversible (`npm unlink`).
-
-The sysop also needs cloudflared:
+The person running the server also needs cloudflared:
 
 ```sh
 brew install cloudflared
@@ -63,177 +46,141 @@ brew install cloudflared
 
 ---
 
-## protocol (the daily loop)
+## Usage
 
-### step 1 — sysop deploys the void
+### 1. One person starts the server
 
 ```sh
 clichat-server
 ```
 
-stdout will spit:
+You'll see something like:
 
 ```
-🚫 404 NOT FOUND  已部署
+✓ Server is up
 
-  把下面这行发给同事 (复制一整行):
+  Send this line to the people you want to chat with:
 
-    export CHAT_SERVER=wss://xxxxx-yyyyy-zzzzz.trycloudflare.com
+    export CHAT_SERVER=wss://random-words.trycloudflare.com
 
-  之后他们就能直接:
+  Then they can join with:
 
-    clichat 404     # GET /404
+    clichat 404
 ```
 
-ship that `export ...` line over whatever side channel you trust. `^C` to tear it down.
+Copy that `export ...` line and send it to the others. Press `Ctrl+C` to shut everything down.
 
-### step 2 — peers join
+### 2. Everyone else joins
 
-one-time shell config:
+Run the `export` line once (or add it to your `~/.zshrc` so you don't have to retype it):
 
 ```sh
-echo 'export CHAT_SERVER=wss://xxxxx-yyyyy-zzzzz.trycloudflare.com' >> ~/.zshrc
-source ~/.zshrc
+export CHAT_SERVER=wss://random-words.trycloudflare.com
 ```
 
-then, from any terminal:
+Then join any room:
 
 ```sh
-clichat 404                    # GET /404
-clichat 996                    # GET /996 (different broadcast domain)
-clichat 404 --name phantom     # override uid (default = $USER)
+clichat 404            # join room 404
+clichat 101            # join room 101 (a different chat)
+clichat 404 --name jay # use a custom display name
 ```
 
-done.
+The default name is your system username.
 
 ---
 
-## interface
+## In-chat commands
 
-| input | side effect |
+| Action | What it does |
 | --- | --- |
-| any non-`/` line + `\n` | `send {type:msg, content}` |
-| `Ctrl+L` | refresh the page (i.e. clear screen — same ANSI as `clear(1)`) |
-| `/refresh` `/404` `/clear` | aliases for the above |
-| `/new` | spawn local server + tunnel inline, hop to a random `<path>` |
-| `Ctrl+C` | `SIGINT` → close ws → exit 0 |
+| Type text + Enter | Send a message |
+| `Ctrl+L` | Clear the screen |
+| `/clear` `/refresh` `/404` | Same as Ctrl+L |
+| `/new` | Spin up a fresh local server and jump to a random room |
+| `Ctrl+C` | Quit |
 
-Disconnect ⇒ exponential backoff up to 5 attempts, then `410 Gone`.
-
----
-
-## status code semantics
-
-We commit to the bit:
-
-| state | code |
-| --- | --- |
-| client joins | `404` (you found us by not finding us) |
-| client leaves | `200 OK` (egress successful) |
-| max retries hit | `410 Gone` |
-| ws send while disconnected | `503 Service Unavailable` |
-| handshake without `name=` | close `4001` |
-| handshake without `room=` | close `4002` |
+If the connection drops, the client retries up to 5 times with exponential backoff before giving up.
 
 ---
 
-## faq
+## Configuration
 
-**sysop's box dies. now what?**
-Cloudflare quick tunnels are ephemeral. Elect a new sysop, re-run `clichat-server`, broadcast the new `CHAT_SERVER`. Or read "stable deployment" below.
-
-**how do I keep macOS from suspending mid-shift?**
-`caffeinate -i &` in a side terminal. `kill %1` when EOD.
-
-**don't want global symlinks?**
-`npm run tunnel` (alias of `clichat-server`) and `npm run chat -- 404`.
-
-**is it encrypted?**
-`wss://` is TLS. The Cloudflare edge terminates it. Inside, your messages are JSON over WS — same security model as joining any chat by URL share. Not E2E. Don't transmit anything you wouldn't drop into a public Slack.
+| Setting | Where to set it | Default |
+| --- | --- | --- |
+| Server URL | `CHAT_SERVER` env var or `--server` | `ws://127.0.0.1:8080` |
+| Room number | First argument, or `CHAT_ROOM` env, or `--room` | (asks if missing) |
+| Display name | `CHAT_NAME` env or `--name` | system username |
+| Server port | `PORT` env (server side) | `8080` |
+| Server host | `HOST` env (server side) | `127.0.0.1` |
 
 ---
 
-## stable deployment (for sysops who care)
+## Local testing (no Cloudflare needed)
 
-If you have an always-on box, swap quick tunnel for either Tailscale Funnel or a Cloudflare named tunnel. This buys a stable hostname.
+If you just want to try it on one machine:
 
 ```sh
-ssh always-on-box
+# Terminal 1
+npm run server
+
+# Terminal 2
+clichat 404
+
+# Terminal 3
+clichat 404
+```
+
+The default `CHAT_SERVER` already points at localhost.
+
+---
+
+## Long-term setup
+
+The Cloudflare Quick Tunnel that `clichat-server` uses is temporary — when the host's machine sleeps or shuts down, the URL stops working.
+
+For something more stable, run the server on an always-on machine and expose it through Tailscale Funnel or a Cloudflare named tunnel:
+
+```sh
+# On the always-on machine
 cd ~/clichat && npm install
-
 npm i -g pm2
 pm2 start server.js --name clichat
 pm2 save
-pm2 startup        # paste the sudo line it prints
+pm2 startup           # follow the printed instructions
 
 tailscale funnel --bg 8080
-tailscale funnel status   # → https://<host>.<tail>.ts.net
+tailscale funnel status   # gives you a stable https URL
 ```
 
-Rewrite `https://...ts.net` → `wss://...ts.net` and bake into peers' `CHAT_SERVER`. They don't need Tailscale; only the sysop's box does.
+Change `https://...` to `wss://...` and that's your `CHAT_SERVER` from now on. Other people don't need to install Tailscale — only the host does.
 
 ---
 
-## local loopback (no tunnel needed)
+## FAQ
 
-Pure dev mode, two terminals:
+**The host's laptop keeps sleeping.**
+Open another terminal and run `caffeinate -i &`. Run `kill %1` to undo it.
 
-```sh
-# t1
-npm run server
+**I don't want to install globally.**
+Use `npm run tunnel` instead of `clichat-server`, and `npm run chat -- 404` instead of `clichat 404`.
 
-# t2
-clichat 404
+**Is it encrypted?**
+The connection uses TLS (the `wss://`). Cloudflare can see message contents at the edge. There's no end-to-end encryption — treat it like any other URL-based chat. Don't send anything you wouldn't drop into a public Slack channel.
 
-# t3
-clichat 404
-```
-
-Default `CHAT_SERVER` is `ws://127.0.0.1:8080` — works out of the box.
+**No one's in the room. Can I still leave?**
+Yes — `Ctrl+C` always shuts down cleanly, even when the room is empty.
 
 ---
 
-## config surface
+## Limits
 
-| knob | source | default |
-| --- | --- | --- |
-| listen port | `PORT` | `8080` |
-| listen host | `HOST` | `127.0.0.1` |
-| ws endpoint | `CHAT_SERVER` / `--server` | `ws://127.0.0.1:8080` |
-| 404 path | positional / `CHAT_ROOM` / `--room` | required (will prompt if absent) |
-| uid | `CHAT_NAME` / `--name` | `$USER` (`os.userInfo().username`) |
+- No accounts, no passwords. Anyone with the server URL and a room number can join. Use a hard-to-guess room number for anything sensitive.
+- No message history. If you weren't online, you didn't see it.
+- Messages over 4000 characters get truncated.
 
 ---
 
-## wire format
-
-JSON over WS. Handshake requires `?name=<uid>&room=<path>`.
-
-```js
-// client → server
-{ type: "msg", content: "hello" }
-
-// server → client
-{ type: "msg", from: "alice", content: "hello", ts: 1779000000000 }
-{ type: "sys", content: "alice 触发 404，迷路进入", ts: 1779000000000 }
-```
-
-Broadcast scope: same room only. Sender does **not** receive its own packet — the client echoes locally for latency parity.
-
-Heartbeat: server pings every 30s; missed pong ⇒ terminate.
-
----
-
-## known limits
-
-- no auth — knowing `(CHAT_SERVER, path)` ⇒ access. Pick a path with entropy: `x9k2-ghost-404` ≫ `404`.
-- path travels in clear text inside the TLS pipe. Don't put secrets in path names.
-- no scrollback / history — offline messages are dropped on the floor (`/dev/null`).
-- 4000-byte message ceiling (server-side truncate).
-- **404 ahead at speed limits**. The author accepts no liability for HR fallout.
-
----
-
-## license
+## License
 
 MIT

@@ -1,61 +1,44 @@
 <sub>[English](README.md) · **中文**</sub>
 
+# clichat
+
+一个命令行聊天工具，从外面看就像一个 404 页面。
+
+约好同一个房间号，大家用同一条命令就进同一个聊天室。没有图形界面，不用注册账号，一行命令就行。
+
 ```
-   _  _    ___  _  _
-  | || |  / _ \| || |
-  | || |_| | | | || |_
-  |__   _| | | |__   _|
-     | | | |_| |  | |
-     |_|  \___/   |_|
-       NOT  FOUND
-```
-
-# clichat — `HTTP/1.1 404 Not Found`
-
-> 一个伪装成 404 页面的隐蔽 WebSocket 聊天工具。
-> 外表 RFC 7231 §6.5.4，内核 RFC 6455。
-
-只走 `stdin → stdout`，没有 GUI，没有 electron，没有遥测。同事 / sysadmin 抓你的包，看到的也只是一条到 Cloudflare edge 的 `wss://`。
-
-```sh
 $ clichat 404
-HTTP/1.1 404 Not Found
-The requested URL /chat/404 was not found on this server.
-
-* GET /404 → joined ghost path "404", uid=emoo
-[14:23] <neighbor> 老板出去了
+* 已连接到房间「404」，代号 emoo
+[14:23] <隔壁工位> 老板出去了
 [14:23] <emoo> 收到，奶茶投票启动
 > _
 ```
 
 ---
 
-## tl;dr
+## 怎么用的
 
-两个二进制，仅此而已。
+只有两个命令：
 
-| 二进制 | 谁来跑 | 干啥 |
+| 命令 | 谁跑 | 干什么 |
 | --- | --- | --- |
-| `clichat-server` | sysop（一个人） | 起本地 ws server + cloudflared quick tunnel；输出一个 `wss://` |
-| `clichat <path>` | 每个 peer | 打开 ws 到 `${CHAT_SERVER}?room=<path>&name=<uid>` |
+| `clichat-server` | 一个人开一次服 | 起聊天服务器，并通过 Cloudflare Tunnel 暴露到公网，打印一个 URL 让大家用 |
+| `clichat <房间号>` | 所有人 | 进对应房间号的聊天室。房间号一样就是同一个聊天 |
 
-**path 一致 ⇒ 同一个广播域。** path 不同则互相隔离，多个小组可并行。
+不同房间号互相看不到。`101` 房间的人看不到 `202` 房间。
 
 ---
 
-## install (一次性)
+## 安装
 
 ```sh
 git clone <repo> clichat
 cd clichat
 npm install
-npm link            # 把 ./client.js → /usr/local/bin/clichat
-                    #    ./bin/clichat-server.js → ...-server
+npm link            # 把 clichat / clichat-server 软链到全局
 ```
 
-`npm link` 不需要 sudo，可逆（`npm unlink`）。
-
-sysop 还需要 cloudflared：
+开服那个人还需要装 cloudflared：
 
 ```sh
 brew install cloudflared
@@ -63,177 +46,141 @@ brew install cloudflared
 
 ---
 
-## protocol (日常循环)
+## 用法
 
-### step 1 — sysop 部署 void
+### 1. 一个人开服
 
 ```sh
 clichat-server
 ```
 
-stdout 会吐：
+跑起来会看到：
 
 ```
-🚫 404 NOT FOUND  已部署
+✓ 服务器已启动
 
-  把下面这行发给同事 (复制一整行):
+  把下面这行发给其他人:
 
-    export CHAT_SERVER=wss://xxxxx-yyyyy-zzzzz.trycloudflare.com
+    export CHAT_SERVER=wss://一串随机词.trycloudflare.com
 
-  之后他们就能直接:
+  之后他们就能这样进:
 
-    clichat 404     # GET /404
+    clichat 404
 ```
 
-把那行 `export ...` 通过你信得过的 side channel 发出去。`^C` 拆掉。
+复制 `export ...` 那行发给同事就行。`Ctrl+C` 关闭。
 
-### step 2 — peers 加入
+### 2. 其他人加入
 
-shell 一次性配置：
+执行那条 `export` 命令一次（或者写到 `~/.zshrc` 里就不用每次都敲）：
 
 ```sh
-echo 'export CHAT_SERVER=wss://xxxxx-yyyyy-zzzzz.trycloudflare.com' >> ~/.zshrc
-source ~/.zshrc
+export CHAT_SERVER=wss://一串随机词.trycloudflare.com
 ```
 
-之后任意终端：
+之后任意进房间：
 
 ```sh
-clichat 404                    # GET /404
-clichat 996                    # GET /996（不同的广播域）
-clichat 404 --name phantom     # 覆盖 uid（默认是 $USER）
+clichat 404              # 进 404 房间
+clichat 101              # 进 101 房间（另一个聊天）
+clichat 404 --name 老王   # 自定义显示名字
 ```
 
-完。终端一开就像在看 404 页面，实际在群聊。
+不指定 `--name` 时默认用你系统的用户名。
 
 ---
 
-## interface
+## 聊天里的快捷操作
 
-| 输入 | 副作用 |
+| 操作 | 效果 |
 | --- | --- |
-| 任意非 `/` 开头的行 + `\n` | `send {type:msg, content}` |
-| `Ctrl+L` | 刷新页面（清屏，等同于 `clear(1)` 的 ANSI） |
-| `/refresh` `/404` `/clear` | 上面的别名 |
-| `/new` | 当场起本地 server + tunnel，跳到一个随机 `<path>` |
-| `Ctrl+C` | `SIGINT` → 关 ws → exit 0 |
+| 输入文字回车 | 发送消息 |
+| `Ctrl+L` | 清屏 |
+| `/clear` `/refresh` `/404` | 同上 |
+| `/new` | 当场起一个本地服务并跳到一个随机房间 |
+| `Ctrl+C` | 退出 |
 
-掉线 ⇒ 指数退避重试至多 5 次，然后 `410 Gone`。
-
----
-
-## 状态码语义
-
-我们认真的：
-
-| 状态 | 码 |
-| --- | --- |
-| client 加入 | `404`（你"找不到"我们的时候找到了我们） |
-| client 离开 | `200 OK`（egress 成功） |
-| 重连耗尽 | `410 Gone` |
-| 断线时发消息 | `503 Service Unavailable` |
-| 握手没带 `name=` | close `4001` |
-| 握手没带 `room=` | close `4002` |
+掉线会自动重试最多 5 次（间隔指数递增），还连不上就放弃。
 
 ---
 
-## faq
+## 配置项
 
-**sysop 的机器挂了怎么办？**
-Cloudflare quick tunnel 是临时的。换一个 sysop，重跑 `clichat-server`，广播新的 `CHAT_SERVER`。或者参见下面的"长期部署"。
-
-**怎么防 macOS 中途休眠？**
-另一个终端 `caffeinate -i &`，下班 `kill %1`。
-
-**不想全局软链？**
-`npm run tunnel`（即 `clichat-server`）和 `npm run chat -- 404`。
-
-**有没有加密？**
-`wss://` 是 TLS。Cloudflare edge 解 TLS。内层是 WS 上的 JSON —— 安全模型等价于"靠 URL 共享加入聊天"。**不是端到端**。不要传任何你不会丢到公开 Slack 里的内容。
+| 项 | 在哪里设 | 默认值 |
+| --- | --- | --- |
+| 服务器地址 | `CHAT_SERVER` 环境变量 / `--server` | `ws://127.0.0.1:8080` |
+| 房间号 | 命令行第一个参数 / `CHAT_ROOM` / `--room` | 不填会问 |
+| 显示名字 | `CHAT_NAME` / `--name` | 系统用户名 |
+| 服务器监听端口 | `PORT`（开服那台机器） | `8080` |
+| 服务器监听地址 | `HOST`（开服那台机器） | `127.0.0.1` |
 
 ---
 
-## 长期部署 (给在意稳定性的 sysop)
+## 本机测试（不用 Cloudflare）
 
-如果你有一台常开的机器，把 quick tunnel 换成 Tailscale Funnel 或 Cloudflare named tunnel，能买来一个稳定 hostname。
+只在一台机器上玩玩：
 
 ```sh
-ssh always-on-box
+# 终端 1
+npm run server
+
+# 终端 2
+clichat 404
+
+# 终端 3
+clichat 404
+```
+
+`CHAT_SERVER` 默认就指向 localhost，开箱即用。
+
+---
+
+## 长期方案
+
+`clichat-server` 用的是 Cloudflare 临时隧道——开服那台机器一旦睡眠或关机，URL 就失效了。
+
+想要稳定的话，把服务器跑在一台常开的机器上，用 Tailscale Funnel 或 Cloudflare 命名隧道暴露：
+
+```sh
+# 在常开的机器上
 cd ~/clichat && npm install
-
 npm i -g pm2
 pm2 start server.js --name clichat
 pm2 save
-pm2 startup        # 粘贴它打印的 sudo 命令
+pm2 startup           # 按提示粘贴它给的 sudo 命令
 
 tailscale funnel --bg 8080
-tailscale funnel status   # → https://<host>.<tail>.ts.net
+tailscale funnel status   # 拿到一个稳定的 https URL
 ```
 
-把 `https://...ts.net` 改成 `wss://...ts.net`，烧到 peers 的 `CHAT_SERVER` 里。peer 们**不需要** Tailscale；只有 sysop 的机器需要。
+把 `https://...` 改成 `wss://...`，这就是大家以后用的 `CHAT_SERVER`。其他人**不需要**装 Tailscale，只有开服的那台需要。
 
 ---
 
-## 本机 loopback (无需 tunnel)
+## 常见问题
 
-纯 dev 模式，三个终端：
+**开服那台 Mac 老是自动休眠？**
+另起一个终端跑 `caffeinate -i &`，下班记得 `kill %1` 关掉。
 
-```sh
-# t1
-npm run server
+**不想全局安装？**
+用 `npm run tunnel` 代替 `clichat-server`，用 `npm run chat -- 404` 代替 `clichat 404`。
 
-# t2
-clichat 404
+**消息加密吗？**
+连接走的是 TLS（`wss://`）。Cloudflare 边缘能看到消息内容。没有端到端加密——和"靠 URL 共享加入聊天"是同一种安全级别。别发任何不能丢到公开 Slack 里的内容。
 
-# t3
-clichat 404
-```
-
-`CHAT_SERVER` 没设时默认 `ws://127.0.0.1:8080`，开箱即用。
+**房间里没人时能正常退出吗？**
+能，`Ctrl+C` 始终能干净关闭，即使房间是空的。
 
 ---
 
-## config 表
+## 已知限制
 
-| knob | 来源 | 默认 |
-| --- | --- | --- |
-| 监听端口 | `PORT` | `8080` |
-| 监听地址 | `HOST` | `127.0.0.1` |
-| ws endpoint | `CHAT_SERVER` / `--server` | `ws://127.0.0.1:8080` |
-| 404 path | 位置参数 / `CHAT_ROOM` / `--room` | 必填（缺则交互问） |
-| uid | `CHAT_NAME` / `--name` | `$USER`（`os.userInfo().username`） |
+- 没有账号、密码。知道服务器 URL 和房间号就能进，重要场合用复杂一点的房间号。
+- 没有历史消息。不在线的时候发的消息收不到。
+- 单条消息超过 4000 字会被截断。
 
 ---
 
-## wire format
-
-WS 上跑 JSON。握手必须带 `?name=<uid>&room=<path>`。
-
-```js
-// client → server
-{ type: "msg", content: "hello" }
-
-// server → client
-{ type: "msg", from: "alice", content: "hello", ts: 1779000000000 }
-{ type: "sys", content: "alice 触发 404，迷路进入", ts: 1779000000000 }
-```
-
-广播范围：仅同 path。发送方**不会**收到自己的包 —— 客户端本地 echo 以保持低延迟体感。
-
-心跳：server 每 30s ping 一次；丢 pong 直接 terminate。
-
----
-
-## 已知边界
-
-- 没有认证 —— 知道 `(CHAT_SERVER, path)` 即可访问。path 取得有 entropy 一点：`x9k2-ghost-404` 远胜 `404`。
-- path 在 TLS 隧道内仍是明文，不要把秘密塞进 path。
-- 没有历史/回滚 —— 离线消息直接丢进 `/dev/null`。
-- 单条消息 4000 字节上限（server 截断）。
-- **404 ahead at speed limits**。作者不为任何 HR 后果负责。
-
----
-
-## license
+## 许可
 
 MIT
