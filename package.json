@@ -1,11 +1,18 @@
 {
   "name": "clichat",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "clichat": "client.js",
+    "clichat-server": "bin/clichat-server.js"
+  },
   "scripts": {
     "start": "node server.js",
-    "client": "node client.js"
+    "server": "node server.js",
+    "chat": "node client.js",
+    "client": "node client.js",
+    "tunnel": "node bin/clichat-server.js"
   },
   "dependencies": {
     "ws": "^8.18.0"
