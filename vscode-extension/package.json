@@ -1,0 +1,78 @@
+{
+  "name": "clichat",
+  "displayName": "clichat",
+  "description": "Join clichat rooms from VS Code. A small terminal-based chat that looks like a 404 page.",
+  "version": "0.1.0",
+  "publisher": "your-publisher",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "chat",
+    "terminal",
+    "websocket",
+    "404"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "clichat.join",
+        "title": "clichat: Join a room",
+        "category": "clichat"
+      },
+      {
+        "command": "clichat.startServer",
+        "title": "clichat: Start server",
+        "category": "clichat"
+      }
+    ],
+    "configuration": {
+      "title": "clichat",
+      "properties": {
+        "clichat.serverUrl": {
+          "type": "string",
+          "default": "",
+          "description": "WebSocket URL of the clichat server (wss://... or ws://...). If empty, the CLI's own default is used (ws://127.0.0.1:8080)."
+        },
+        "clichat.defaultRoom": {
+          "type": "string",
+          "default": "",
+          "description": "Pre-filled room number when running 'clichat: Join a room'. Leave empty to be asked every time."
+        },
+        "clichat.defaultName": {
+          "type": "string",
+          "default": "",
+          "description": "Display name. If empty, the CLI uses your system username."
+        },
+        "clichat.cliPath": {
+          "type": "string",
+          "default": "clichat",
+          "description": "Path to the clichat CLI binary. Default 'clichat' assumes it's on $PATH (via 'npm link' in the project)."
+        },
+        "clichat.serverCliPath": {
+          "type": "string",
+          "default": "clichat-server",
+          "description": "Path to the clichat-server CLI binary. Default 'clichat-server' assumes it's on $PATH."
+        }
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "scripts": {
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.0.0"
+  }
+}
