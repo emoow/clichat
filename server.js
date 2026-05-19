@@ -56,8 +56,8 @@ wss.on('connection', (ws, req) => {
   clients.set(ws, { name, room });
   joinRoom(ws, room);
   const online = rooms.get(room).size;
-  console.log(`[+] ${name} joined room "${room}" (${online} online in room)`);
-  broadcast(room, { type: 'sys', content: `${name} 划水进入摸鱼室`, ts: now() });
+  console.log(`[+] ${name} hit 404 "${room}" (${online} ghosts in page)`);
+  broadcast(room, { type: 'sys', content: `${name} 触发 404，迷路进入`, ts: now() });
 
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
@@ -75,8 +75,8 @@ wss.on('connection', (ws, req) => {
     clients.delete(ws);
     leaveRoom(ws, room);
     const remaining = rooms.get(room)?.size ?? 0;
-    console.log(`[-] ${name} left room "${room}" (${remaining} online in room)`);
-    broadcast(room, { type: 'sys', content: `${name} 假装去开会了`, ts: now() });
+    console.log(`[-] ${name} left 404 "${room}" (${remaining} ghosts in page)`);
+    broadcast(room, { type: 'sys', content: `${name} 找到出路，返回 200 OK`, ts: now() });
   });
 
   ws.on('error', (err) => {
@@ -97,4 +97,4 @@ const interval = setInterval(() => {
 
 wss.on('close', () => clearInterval(interval));
 
-console.log(`clichat (摸鱼版) server listening on ${HOST}:${PORT}`);
+console.log(`clichat 404 NOT FOUND server listening on ${HOST}:${PORT}`);

@@ -1,57 +1,78 @@
-# 🐟 clichat · 打工人摸鱼终端
-
-> 在 IDE 终端里和同事偷偷聊天。约一个房间号，一行命令，进入鱼塘。
-
 ```
-$ clichat 101
-* 已连接到摸鱼室「101」，代号 emoo
-[14:23] <隔壁工位> 老板出门了
-[14:23] <emoo> 收到，奶茶投票
+   _  _    ___  _  _
+  | || |  / _ \| || |
+  | || |_| | | | || |_
+  |__   _| | | |__   _|
+     | | | |_| |  | |
+     |_|  \___/   |_|
+       NOT  FOUND
+```
+
+# clichat — `HTTP/1.1 404 Not Found`
+
+> A covert WebSocket chat that masquerades as a 404 page.
+> RFC 7231 §6.5.4 on the outside, RFC 6455 on the inside.
+
+`stdin → stdout` only. No GUI, no electron, no telemetry. If your sysadmin greps your packet capture, all they see is `wss://` to a Cloudflare edge.
+
+```sh
+$ clichat 404
+HTTP/1.1 404 Not Found
+The requested URL /chat/404 was not found on this server.
+
+* GET /404 → joined ghost path "404", uid=emoo
+[14:23] <neighbor> boss out of range
+[14:23] <emoo> ack, milk-tea ballot incoming
 > _
 ```
 
-## 核心命令只有两个
+---
 
-| 命令 | 谁来跑 | 作用 |
+## tl;dr
+
+Two binaries. That's it.
+
+| binary | run by | does |
 | --- | --- | --- |
-| `clichat-server` | 鱼塘塘主 (一个人) | 开服 + Cloudflare 隧道，拿到 wss URL |
-| `clichat <房间号>` | 所有摸鱼人 | 进对应房间号的鱼塘 |
+| `clichat-server` | sysop (one human) | spawn local ws server + cloudflared quick tunnel; emit a `wss://` |
+| `clichat <path>` | every peer | open ws to `${CHAT_SERVER}?room=<path>&name=<uid>` |
 
-房间号一致 = 同一个鱼塘。不同房间号互相看不到，可以多个小圈子并行。
+**Same `<path>` ⇒ same broadcast domain.** Different paths are isolated. Multiple cells can coexist.
 
 ---
 
-## 安装（一次性）
+## install (once)
 
-```bash
+```sh
 git clone <repo> clichat
 cd clichat
 npm install
-npm link            # 让 clichat / clichat-server 全局可用
+npm link            # symlinks ./client.js → /usr/local/bin/clichat
+                    #          ./bin/clichat-server.js → ...-server
 ```
 
-> `npm link` 把 bin 软链到全局，不需要 sudo 也能用。如果你装了 cloudflared 全套就跳过下一步。
+`npm link` doesn't need sudo and is reversible (`npm unlink`).
 
-塘主额外装 cloudflared（只需要一次，0 配置）：
+The sysop also needs cloudflared:
 
-```bash
+```sh
 brew install cloudflared
 ```
 
 ---
 
-## 用法（每天就这两步）
+## protocol (the daily loop)
 
-### 第 1 步：塘主开服（一个人做一次）
+### step 1 — sysop deploys the void
 
-```bash
+```sh
 clichat-server
 ```
 
-跑起来会看到：
+stdout will spit:
 
 ```
-🐟 摸鱼频道已上线
+🚫 404 NOT FOUND  已部署
 
   把下面这行发给同事 (复制一整行):
 
@@ -59,135 +80,158 @@ clichat-server
 
   之后他们就能直接:
 
-    clichat 101     # 进 101 房间
+    clichat 404     # GET /404
 ```
 
-把那行 `export ...` 发到摸鱼群里就完了。`Ctrl+C` 关闭。
+ship that `export ...` line over whatever side channel you trust. `^C` to tear it down.
 
-### 第 2 步：所有人加入
+### step 2 — peers join
 
-第一次配置（写到 `~/.zshrc` / `~/.bashrc` 一次就好）：
+one-time shell config:
 
-```bash
+```sh
 echo 'export CHAT_SERVER=wss://xxxxx-yyyyy-zzzzz.trycloudflare.com' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-之后任意 IDE 终端里：
+then, from any terminal:
 
-```bash
-clichat 101         # 进 101 房间
-clichat 996         # 换房间，进 996 房间
-clichat 101 --name 摸鱼小王子   # 自定义代号（默认取系统用户名）
+```sh
+clichat 404                    # GET /404
+clichat 996                    # GET /996 (different broadcast domain)
+clichat 404 --name phantom     # override uid (default = $USER)
 ```
 
-完事。
+done.
 
 ---
 
-## 摸鱼操作要点
+## interface
 
-| 操作 | 说明 |
+| input | side effect |
 | --- | --- |
-| 输入文字回车 | 发送消息 |
-| `Ctrl+L` | **老板键**，一键清屏伪装 |
-| `/clear` 或 `/boss` | 同上 |
-| `Ctrl+C` | 退出 |
+| any non-`/` line + `\n` | `send {type:msg, content}` |
+| `Ctrl+L` | refresh the page (i.e. clear screen — same ANSI as `clear(1)`) |
+| `/refresh` `/404` `/clear` | aliases for the above |
+| `/new` | spawn local server + tunnel inline, hop to a random `<path>` |
+| `Ctrl+C` | `SIGINT` → close ws → exit 0 |
 
-掉线会自动指数退避重连（最多 5 次）。
-
----
-
-## 常见问题
-
-**Q: 塘主关电脑了怎么办？**
-A: Cloudflare Quick Tunnel 是临时的，关机/睡眠就断。换一个塘主重新 `clichat-server`，把新 URL 发群里更新 `CHAT_SERVER` 即可。
-
-**Q: 想要长期稳定的服务？**
-A: 把 server 部署到一台常开的 macOS / 云机，用 Tailscale Funnel 或 Cloudflare Named Tunnel 拿到固定域名，写进 `CHAT_SERVER` 一劳永逸。详见下面"高级部署"。
-
-**Q: 防止 macOS 自动睡眠把塘主电脑搞掉线？**
-A: 另起一个终端 `caffeinate -i &`，下班记得 `kill`。
-
-**Q: 不想全局安装 / 不想 npm link？**
-A: 可以直接 `npm run tunnel`（=clichat-server）和 `npm run chat -- 101`。
+Disconnect ⇒ exponential backoff up to 5 attempts, then `410 Gone`.
 
 ---
 
-## 高级部署（长期稳定的塘主方案）
+## status code semantics
 
-把 server 跑在一台常开的远程 macOS：
+We commit to the bit:
 
-```bash
-ssh 你的远程机
+| state | code |
+| --- | --- |
+| client joins | `404` (you found us by not finding us) |
+| client leaves | `200 OK` (egress successful) |
+| max retries hit | `410 Gone` |
+| ws send while disconnected | `503 Service Unavailable` |
+| handshake without `name=` | close `4001` |
+| handshake without `room=` | close `4002` |
+
+---
+
+## faq
+
+**sysop's box dies. now what?**
+Cloudflare quick tunnels are ephemeral. Elect a new sysop, re-run `clichat-server`, broadcast the new `CHAT_SERVER`. Or read "stable deployment" below.
+
+**how do I keep macOS from suspending mid-shift?**
+`caffeinate -i &` in a side terminal. `kill %1` when EOD.
+
+**don't want global symlinks?**
+`npm run tunnel` (alias of `clichat-server`) and `npm run chat -- 404`.
+
+**is it encrypted?**
+`wss://` is TLS. The Cloudflare edge terminates it. Inside, your messages are JSON over WS — same security model as joining any chat by URL share. Not E2E. Don't transmit anything you wouldn't drop into a public Slack.
+
+---
+
+## stable deployment (for sysops who care)
+
+If you have an always-on box, swap quick tunnel for either Tailscale Funnel or a Cloudflare named tunnel. This buys a stable hostname.
+
+```sh
+ssh always-on-box
 cd ~/clichat && npm install
 
 npm i -g pm2
 pm2 start server.js --name clichat
 pm2 save
-pm2 startup        # 按提示复制粘贴它给的 sudo 命令
+pm2 startup        # paste the sudo line it prints
 
 tailscale funnel --bg 8080
-tailscale funnel status   # 拿到 https://<host>.<tail>.ts.net
+tailscale funnel status   # → https://<host>.<tail>.ts.net
 ```
 
-把 `https://...ts.net` 改成 `wss://...ts.net`，写进所有摸鱼人的 `CHAT_SERVER` 即可。同事**不需要**装 Tailscale。
+Rewrite `https://...ts.net` → `wss://...ts.net` and bake into peers' `CHAT_SERVER`. They don't need Tailscale; only the sysop's box does.
 
 ---
 
-## 本机自测
+## local loopback (no tunnel needed)
 
-不需要 cloudflared，纯本机两个终端：
+Pure dev mode, two terminals:
 
-```bash
-# 终端 1: 起 server
+```sh
+# t1
 npm run server
 
-# 终端 2: 用户 A
-clichat 101
+# t2
+clichat 404
 
-# 终端 3: 用户 B
-clichat 101
+# t3
+clichat 404
 ```
 
-`CHAT_SERVER` 没设的时候默认连 `ws://127.0.0.1:8080`。
+Default `CHAT_SERVER` is `ws://127.0.0.1:8080` — works out of the box.
 
 ---
 
-## 配置一览
+## config surface
 
-| 项 | 来源 | 默认值 |
+| knob | source | default |
 | --- | --- | --- |
-| 服务器监听端口 | `PORT` | `8080` |
-| 服务器监听地址 | `HOST` | `127.0.0.1` |
-| 客户端目标 URL | `CHAT_SERVER` / `--server` | `ws://127.0.0.1:8080` |
-| 房间号 | 位置参数 / `CHAT_ROOM` / `--room` | 必填 (没填会问) |
-| 用户名 | `CHAT_NAME` / `--name` | 系统用户名 |
+| listen port | `PORT` | `8080` |
+| listen host | `HOST` | `127.0.0.1` |
+| ws endpoint | `CHAT_SERVER` / `--server` | `ws://127.0.0.1:8080` |
+| 404 path | positional / `CHAT_ROOM` / `--room` | required (will prompt if absent) |
+| uid | `CHAT_NAME` / `--name` | `$USER` (`os.userInfo().username`) |
 
 ---
 
-## 消息协议
+## wire format
 
-WebSocket 上跑 JSON。握手时必须带 `?name=xxx&room=yyy`，缺 `name` 关闭码 `4001`，缺 `room` 关闭码 `4002`。
+JSON over WS. Handshake requires `?name=<uid>&room=<path>`.
 
+```js
+// client → server
+{ type: "msg", content: "hello" }
+
+// server → client
+{ type: "msg", from: "alice", content: "hello", ts: 1779000000000 }
+{ type: "sys", content: "alice 触发 404，迷路进入", ts: 1779000000000 }
 ```
-client → server:  { "type": "msg", "content": "hello" }
-server → client:  { "type": "msg", "from": "alice", "content": "hello", "ts": ... }
-                  { "type": "sys", "content": "alice 划水进入摸鱼室",   "ts": ... }
-```
 
-广播仅限同房间，且不回传给发送者（客户端本地立即 echo）。
+Broadcast scope: same room only. Sender does **not** receive its own packet — the client echoes locally for latency parity.
+
+Heartbeat: server pings every 30s; missed pong ⇒ terminate.
 
 ---
 
-## 已知限制 & 安全提示
+## known limits
 
-- 没有认证 —— 知道 server URL + 房间号就能进，建议房间号取得复杂一点（`mooyu-x9k2-fish` 比 `101` 安全）
-- 房间号是明文传输的，不要在公司监控面前裸聊
-- 无历史消息 —— 没在线时发的看不到
-- 单条消息上限 4000 字符
-- **摸鱼有风险，使用需谨慎**：本工具不对任何工位事故负责
+- no auth — knowing `(CHAT_SERVER, path)` ⇒ access. Pick a path with entropy: `x9k2-ghost-404` ≫ `404`.
+- path travels in clear text inside the TLS pipe. Don't put secrets in path names.
+- no scrollback / history — offline messages are dropped on the floor (`/dev/null`).
+- 4000-byte message ceiling (server-side truncate).
+- **404 ahead at speed limits**. The author accepts no liability for HR fallout.
 
-## 许可
+---
+
+## license
 
 MIT
