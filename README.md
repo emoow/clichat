@@ -1,3 +1,5 @@
+<sub>**English** · [中文](README.zh-CN.md)</sub>
+
 ```
    _  _    ___  _  _
   | || |  / _ \| || |
