@@ -9,8 +9,8 @@ Everyone joining the same room number lands in the same chat. There's no GUI, no
 ```
 $ clichat 404
 * connected to room "404" as emoo
-[14:23] <neighbor> boss is out
-[14:23] <emoo> noted, milk-tea poll incoming
+[14:23] <stray> anyone else 404'd in here?
+[14:23] <emoo> me, lost on the way to /home
 > _
 ```
 
@@ -166,7 +166,7 @@ Open another terminal and run `caffeinate -i &`. Run `kill %1` to undo it.
 Use `npm run tunnel` instead of `clichat-server`, and `npm run chat -- 404` instead of `clichat 404`.
 
 **Is it encrypted?**
-The connection uses TLS (the `wss://`). Cloudflare can see message contents at the edge. There's no end-to-end encryption — treat it like any other URL-based chat. Don't send anything you wouldn't drop into a public Slack channel.
+The connection uses TLS (the `wss://`). Cloudflare can see message contents at the edge. No end-to-end encryption — treat it like any URL-based chat, don't send anything sensitive.
 
 **No one's in the room. Can I still leave?**
 Yes — `Ctrl+C` always shuts down cleanly, even when the room is empty.
