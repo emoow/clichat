@@ -3,6 +3,7 @@ import WebSocket from 'ws';
 import readline from 'node:readline';
 import process from 'node:process';
 import os from 'node:os';
+import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -93,6 +94,47 @@ function renderMsg(m) {
   return null;
 }
 
+const HISTORY_DIR = join(os.homedir(), '.clichat');
+
+function ensureHistoryDir() {
+  try { fs.mkdirSync(HISTORY_DIR, { recursive: true }); } catch {}
+}
+
+function historyFile(room) {
+  const safe = String(room).replace(/[^a-zA-Z0-9_-]/g, '_');
+  return join(HISTORY_DIR, `${safe}.jsonl`);
+}
+
+function loadLocalHistory(room) {
+  const file = historyFile(room);
+  if (!fs.existsSync(file)) return [];
+  const out = [];
+  try {
+    const text = fs.readFileSync(file, 'utf8');
+    for (const line of text.split('\n')) {
+      if (!line) continue;
+      try { out.push(JSON.parse(line)); } catch {}
+    }
+  } catch {}
+  return out;
+}
+
+function rewriteLocalHistory(room, messages) {
+  const file = historyFile(room);
+  const text = messages.length ? messages.map((m) => JSON.stringify(m)).join('\n') + '\n' : '';
+  fs.writeFileSync(file, text);
+}
+
+function appendLocalMessage(room, msg) {
+  try { fs.appendFileSync(historyFile(room), JSON.stringify(msg) + '\n'); } catch {}
+}
+
+function maxId(messages) {
+  let m = 0;
+  for (const x of messages) if (x.id && x.id > m) m = x.id;
+  return m;
+}
+
 let ws = null;
 let attempt = 0;
 let stopped = false;
@@ -135,9 +177,13 @@ function startLocalServer() {
 }
 
 function connect() {
+  ensureHistoryDir();
+  const local = loadLocalHistory(ROOM);
+  const lastId = maxId(local);
   const url = new URL(SERVER);
   url.searchParams.set('name', NAME);
   url.searchParams.set('room', ROOM);
+  if (lastId) url.searchParams.set('since', String(lastId));
   ws = new WebSocket(url.toString());
 
   ws.on('open', () => {
@@ -149,6 +195,38 @@ function connect() {
   ws.on('message', (raw) => {
     let msg;
     try { msg = JSON.parse(raw.toString()); } catch { return; }
+
+    if (msg.type === 'history') {
+      const incoming = Array.isArray(msg.messages) ? msg.messages : [];
+      // 用 id 做 key 合并去重，按 ts 排序后整文件重写
+      const local2 = loadLocalHistory(ROOM);
+      const byId = new Map();
+      for (const m of local2) if (m && m.id) byId.set(m.id, m);
+      for (const m of incoming) if (m && m.id) byId.set(m.id, m);
+      const merged = Array.from(byId.values()).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      rewriteLocalHistory(ROOM, merged);
+
+      if (incoming.length) {
+        printIncoming(`${DIM}--- 离线期间 ${incoming.length} 条留言 ---${RESET}`);
+        for (const m of incoming) {
+          const line = renderMsg(m);
+          if (line) printIncoming(line);
+        }
+        printIncoming(`${DIM}--- 历史回放结束，以下是实时 ---${RESET}`);
+      }
+      return;
+    }
+
+    if (msg.type === 'msg') {
+      appendLocalMessage(ROOM, msg);
+      // 自己发的消息已经乐观回显过了，不再重复打印
+      if (msg.from === NAME) return;
+      const line = renderMsg(msg);
+      if (line) printIncoming(line);
+      return;
+    }
+
+    // sys 之类
     const line = renderMsg(msg);
     if (line) printIncoming(line);
   });

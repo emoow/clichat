@@ -8,6 +8,24 @@ const wss = new WebSocketServer({ port: PORT, host: HOST });
 const clients = new Map();
 // room -> Set<ws>
 const rooms = new Map();
+// room -> Array<{id, type:'msg', from, content, ts}>
+const history = new Map();
+const HISTORY_LIMIT = 500;
+let nextId = 1;
+
+function appendHistory(room, msg) {
+  let arr = history.get(room);
+  if (!arr) { arr = []; history.set(room, arr); }
+  arr.push(msg);
+  if (arr.length > HISTORY_LIMIT) arr.splice(0, arr.length - HISTORY_LIMIT);
+}
+
+function getHistorySince(room, sinceId) {
+  const arr = history.get(room);
+  if (!arr) return [];
+  if (!sinceId) return arr.slice();
+  return arr.filter((m) => m.id > sinceId);
+}
 
 function joinRoom(ws, room) {
   let set = rooms.get(room);
@@ -38,11 +56,13 @@ function broadcast(room, payload, exceptWs = null) {
 const now = () => Date.now();
 
 wss.on('connection', (ws, req) => {
-  let name, room;
+  let name, room, since = 0;
   try {
     const url = new URL(req.url, 'http://localhost');
     name = url.searchParams.get('name')?.trim();
     room = url.searchParams.get('room')?.trim();
+    const s = url.searchParams.get('since');
+    if (s) since = Number(s) || 0;
   } catch {}
   if (!name) {
     ws.close(4001, 'name required');
@@ -55,8 +75,13 @@ wss.on('connection', (ws, req) => {
 
   clients.set(ws, { name, room });
   joinRoom(ws, room);
+  // 先把缺失的历史推给这一个客户端
+  const past = getHistorySince(room, since);
+  if (past.length) {
+    ws.send(JSON.stringify({ type: 'history', messages: past }));
+  }
   const online = rooms.get(room).size;
-  console.log(`[+] ${name} hit 404 "${room}" (${online} ghosts in page)`);
+  console.log(`[+] ${name} hit 404 "${room}" (${online} ghosts in page, replayed ${past.length})`);
   broadcast(room, { type: 'sys', content: `${name} 触发 404，迷路进入`, ts: now() });
 
   ws.isAlive = true;
@@ -68,7 +93,10 @@ wss.on('connection', (ws, req) => {
     if (msg?.type !== 'msg' || typeof msg.content !== 'string') return;
     const content = msg.content.slice(0, 4000);
     if (!content) return;
-    broadcast(room, { type: 'msg', from: name, content, ts: now() }, ws);
+    const out = { type: 'msg', id: nextId++, from: name, content, ts: now() };
+    appendHistory(room, out);
+    // 广播给所有人（包括发送者），让发送者也能拿到 id 落盘
+    broadcast(room, out);
   });
 
   ws.on('close', () => {
