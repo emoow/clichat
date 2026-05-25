@@ -156,20 +156,44 @@ function startLocalServer() {
 
     const URL_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
     const EXPORT_RE = /export CHAT_SERVER=(\S+)/;
+    let resolved = false;
+
+    // Spinner animation while waiting for tunnel
+    const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let frameIdx = 0;
+    const spinnerInterval = setInterval(() => {
+      if (resolved) return;
+      const frame = frames[frameIdx % frames.length];
+      process.stderr.write(`\r${DIM}${frame} Launching server...${RESET}`);
+      frameIdx++;
+    }, 80);
 
     function handleOutput(buf) {
       const text = buf.toString();
-      process.stderr.write(text);
+      // Suppress raw cloudflare output; spinner handles user feedback
+      if (resolved) return;
       const m1 = text.match(EXPORT_RE);
-      if (m1) return resolve(m1[1].replace(/^"|"$/g, ''));
+      if (m1) {
+        resolved = true;
+        clearInterval(spinnerInterval);
+        process.stderr.write(`\r\x1b[K`);
+        return resolve(m1[1].replace(/^"|"$/g, ''));
+      }
       const m2 = text.match(URL_RE);
-      if (m2) return resolve(m2[0].replace(/^https/, 'wss'));
+      if (m2) {
+        resolved = true;
+        clearInterval(spinnerInterval);
+        process.stderr.write(`\r\x1b[K`);
+        return resolve(m2[0].replace(/^https/, 'wss'));
+      }
     }
 
     serverProcess.stdout.on('data', handleOutput);
     serverProcess.stderr.on('data', handleOutput);
 
     serverProcess.on('exit', (code) => {
+      clearInterval(spinnerInterval);
+      process.stderr.write(`\r\x1b[K`);
       serverProcess = null;
       if (code !== 0) reject(new Error(`server exited code=${code}`));
     });

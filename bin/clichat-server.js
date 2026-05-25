@@ -13,6 +13,7 @@ const SERVER_PATH = join(__dirname, '..', 'server.js');
 const PORT = process.env.PORT || '8080';
 
 const CYAN = '\x1b[36m';
+const WHITE = '\x1b[37m';
 const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
 const DIM = '\x1b[90m';
@@ -38,13 +39,11 @@ if (!existsSync(SERVER_PATH)) {
   process.exit(1);
 }
 
-console.log(`${DIM}启动 server (port ${PORT})...${RESET}`);
 const server = spawn('node', [SERVER_PATH], {
-  stdio: ['ignore', 'inherit', 'inherit'],
+  stdio: ['ignore', 'pipe', 'pipe'],
   env: { ...process.env, PORT, HOST: '127.0.0.1' },
 });
 
-console.log(`${DIM}启动 cloudflared tunnel...${RESET}`);
 const tunnel = spawn('cloudflared', ['tunnel', '--url', `http://localhost:${PORT}`], {
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -52,15 +51,27 @@ const tunnel = spawn('cloudflared', ['tunnel', '--url', `http://localhost:${PORT
 let urlPrinted = false;
 const URL_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
 
+// Spinner animation while waiting for tunnel URL
+const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+let frameIdx = 0;
+const spinnerInterval = setInterval(() => {
+  if (urlPrinted) return;
+  const frame = frames[frameIdx % frames.length];
+  process.stderr.write(`\r${WHITE}${frame}${RESET} ${DIM}部署服务器中...${RESET}`);
+  frameIdx++;
+}, 80);
+
 function handleTunnelOutput(buf) {
   const text = buf.toString();
-  process.stderr.write(`${DIM}${text}${RESET}`);
+  // Suppress raw cloudflare output; spinner handles user feedback
   if (urlPrinted) return;
   const m = text.match(URL_RE);
   if (m) {
     urlPrinted = true;
+    clearInterval(spinnerInterval);
+    process.stderr.write(`\r\x1b[K`); // clear spinner line
     const wss = m[0].replace(/^https/, 'wss');
-    const sample = `clichat 404`;
+    const sample = `clichat 「任意房间号」`;
     console.log('');
     console.log(`${GREEN}╔══════════════════════════════════════════════════════════════╗${RESET}`);
     console.log(`${GREEN}║${RESET}  ${CYAN}🚫 404 NOT FOUND  已部署${RESET}                                  ${GREEN}║${RESET}`);
