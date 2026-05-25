@@ -1,6 +1,6 @@
 # clichat — VS Code extension
 
-A thin VS Code wrapper around the [clichat](../README.md) command-line tool.
+A thin VS Code wrapper around the [clichat](https://github.com/emoow/clichat) command-line tool.
 Adds two commands so you can join a room without leaving the editor.
 
 ## Prerequisites
