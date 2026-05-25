@@ -78,18 +78,32 @@ const rl = readline.createInterface({
   prompt: '> ',
 });
 
-function printIncoming(line) {
+function printIncoming(line, msg) {
+  if (mode === 'picker') {
+    incomingQueue.push({ line, msg });
+    return;
+  }
   process.stdout.write(CLEAR_LINE + line + '\n');
+  trackRender(line, msg);
   rl.prompt(true);
 }
 
 function printOwnEcho(line) {
   process.stdout.write(UP_ONE + CLEAR_LINE + line + '\n');
+  trackRender(line, null);
   rl.prompt();
 }
 
 function renderMsg(m) {
-  if (m.type === 'msg') return `[${fmtTime(m.ts)}] <${m.from}> ${m.content}`;
+  if (m.type === 'msg') {
+    const main = `[${fmtTime(m.ts)}] <${m.from}> ${m.content}`;
+    if (m.replyTo) {
+      const r = m.replyTo;
+      const quote = `${DIM}  ┌ <${r.from}> ${r.content}${RESET}`;
+      return `${quote}\n${main}`;
+    }
+    return main;
+  }
   if (m.type === 'sys') return `${DIM}[${fmtTime(m.ts)}] * ${m.content}${RESET}`;
   return null;
 }
@@ -213,7 +227,7 @@ function connect() {
   ws.on('open', () => {
     attempt = 0;
     printIncoming(`${DIM}* 已落入 404 页面「${ROOM}」，代号 ${NAME}${RESET}`);
-    printIncoming(`${DIM}* 输入文字回车发送  |  Ctrl+L 刷新键清屏  |  Ctrl+C 退出${RESET}`);
+    printIncoming(`${DIM}* 文字回车发送 | /r 选消息引用 | Ctrl+L 清屏 | Ctrl+C 退出${RESET}`);
   });
 
   ws.on('message', (raw) => {
@@ -234,7 +248,7 @@ function connect() {
         printIncoming(`${DIM}--- 离线期间 ${incoming.length} 条留言 ---${RESET}`);
         for (const m of incoming) {
           const line = renderMsg(m);
-          if (line) printIncoming(line);
+          if (line) printIncoming(line, m);
         }
         printIncoming(`${DIM}--- 历史回放结束，以下是实时 ---${RESET}`);
       }
@@ -244,9 +258,17 @@ function connect() {
     if (msg.type === 'msg') {
       appendLocalMessage(ROOM, msg);
       // 自己发的消息已经乐观回显过了，不再重复打印
-      if (msg.from === NAME) return;
+      if (msg.from === NAME) {
+        // 给 echo 时压入的占位条目补上服务端分配的 id
+        const pending = pendingOwn.shift();
+        if (pending) {
+          pending.id = msg.id;
+          pending.selectable = true;
+        }
+        return;
+      }
       const line = renderMsg(msg);
-      if (line) printIncoming(line);
+      if (line) printIncoming(line, msg);
       return;
     }
 
@@ -279,9 +301,186 @@ function connect() {
   ws.on('error', () => { /* close handler runs after */ });
 }
 
+const PROMPT_NORMAL = '> ';
+const RENDERED_LIMIT = 50;
+const REPLY_SNIP_LEN = 80;
+const REVERSE = '\x1b[7m';
+
+let mode = 'normal'; // 'normal' | 'picker'
+let pendingReplyTo = null; // { id, from, content }
+const rendered = []; // 已显示在屏幕上的条目（按顺序），元素 { formatted, height, selectable, id?, from?, content? }
+const pendingOwn = []; // 自己发了但还没拿到服务端 id 的条目（按发送顺序）
+const incomingQueue = [];
+let pickerIndex = -1;
+let savedKeypressListeners = [];
+
+function stripAnsi(s) {
+  return s.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+function trackRender(formatted, msg) {
+  if (!formatted) return;
+  const entry = { formatted, height: formatted.split('\n').length };
+  if (msg && msg.type === 'msg' && msg.id) {
+    entry.selectable = true;
+    entry.id = msg.id;
+    entry.from = msg.from;
+    entry.content = msg.content;
+  }
+  rendered.push(entry);
+  if (rendered.length > RENDERED_LIMIT) rendered.shift();
+}
+
+function markLastAsPendingOwn(content) {
+  const own = rendered[rendered.length - 1];
+  if (!own) return;
+  own.from = NAME;
+  own.content = content;
+  pendingOwn.push(own);
+}
+
+// anchor = picker 状态下 cursor 停泊位置（紧跟在最后一条渲染条目下面）
+function rowsToTopOf(idx) {
+  let h = 0;
+  for (let i = idx; i < rendered.length; i++) h += rendered[i].height;
+  return h;
+}
+
+function rowsBelowBottomOf(idx) {
+  let h = 1; // anchor 比最后一条的底端再下一行
+  for (let i = idx + 1; i < rendered.length; i++) h += rendered[i].height;
+  return h;
+}
+
+function highlightFormat(formatted) {
+  return formatted
+    .split('\n')
+    .map((line) => REVERSE + stripAnsi(line) + RESET)
+    .join('\n');
+}
+
+function redrawAt(idx, highlighted) {
+  const r = rendered[idx];
+  const up = rowsToTopOf(idx);
+  process.stdout.write(`\x1b[${up}A\r`);
+  const text = highlighted ? highlightFormat(r.formatted) : r.formatted;
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    process.stdout.write('\x1b[K' + lines[i]);
+    if (i < lines.length - 1) process.stdout.write('\n');
+  }
+  process.stdout.write('\r');
+  const down = rowsBelowBottomOf(idx);
+  if (down > 0) process.stdout.write(`\x1b[${down}B`);
+}
+
+function navigablePrev(from) {
+  const rows = process.stdout.rows || 24;
+  for (let i = from - 1; i >= 0; i--) {
+    if (!rendered[i].selectable) continue;
+    if (rowsToTopOf(i) >= rows - 1) return -1; // 翻不上去了
+    return i;
+  }
+  return -1;
+}
+
+function navigableNext(from) {
+  for (let i = from + 1; i < rendered.length; i++) {
+    if (rendered[i].selectable) return i;
+  }
+  return -1;
+}
+
+function pickerKeypress(_, key) {
+  if (!key) return;
+  if (key.name === 'up') {
+    const next = navigablePrev(pickerIndex);
+    if (next >= 0) {
+      redrawAt(pickerIndex, false);
+      pickerIndex = next;
+      redrawAt(pickerIndex, true);
+    }
+  } else if (key.name === 'down') {
+    const next = navigableNext(pickerIndex);
+    if (next >= 0) {
+      redrawAt(pickerIndex, false);
+      pickerIndex = next;
+      redrawAt(pickerIndex, true);
+    }
+  } else if (key.name === 'return') {
+    exitPicker(true);
+  } else if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
+    exitPicker(false);
+  }
+}
+
+function enterPicker() {
+  let start = -1;
+  for (let i = rendered.length - 1; i >= 0; i--) {
+    if (rendered[i].selectable) { start = i; break; }
+  }
+  if (start < 0) {
+    printIncoming(`${DIM}* 还没消息可以引用${RESET}`);
+    return;
+  }
+  const rows = process.stdout.rows || 24;
+  if (rowsToTopOf(start) >= rows - 1) {
+    printIncoming(`${DIM}* 屏幕里看不到可引用的消息了${RESET}`);
+    return;
+  }
+  // 抹掉 "> /r" 输入回显，并清掉它下面 readline 重画的空 prompt
+  process.stdout.write(UP_ONE + CLEAR_LINE + '\x1b[J');
+  mode = 'picker';
+  pickerIndex = start;
+  savedKeypressListeners = process.stdin.listeners('keypress').slice();
+  process.stdin.removeAllListeners('keypress');
+  process.stdin.on('keypress', pickerKeypress);
+  redrawAt(pickerIndex, true);
+}
+
+function exitPicker(confirmed) {
+  if (pickerIndex >= 0 && pickerIndex < rendered.length) {
+    redrawAt(pickerIndex, false);
+  }
+  process.stdin.removeListener('keypress', pickerKeypress);
+  for (const l of savedKeypressListeners) process.stdin.on('keypress', l);
+  savedKeypressListeners = [];
+  mode = 'normal';
+  if (confirmed && pickerIndex >= 0) {
+    const sel = rendered[pickerIndex];
+    pendingReplyTo = { id: sel.id, from: sel.from, content: sel.content.slice(0, REPLY_SNIP_LEN) };
+    rl.setPrompt(`${CYAN}(回复 ${sel.from})${RESET}> `);
+  } else {
+    rl.setPrompt(PROMPT_NORMAL);
+  }
+  pickerIndex = -1;
+  while (incomingQueue.length) {
+    const item = incomingQueue.shift();
+    process.stdout.write(item.line + '\n');
+    trackRender(item.line, item.msg);
+  }
+  rl.prompt();
+}
+
 rl.on('line', (raw) => {
   const content = raw.trim();
-  if (!content) { rl.prompt(); return; }
+
+  // /r 进入回复选择模式
+  if (content === '/r' || content === '/reply') {
+    enterPicker();
+    return;
+  }
+
+  if (!content) {
+    if (pendingReplyTo) {
+      pendingReplyTo = null;
+      rl.setPrompt(PROMPT_NORMAL);
+      printIncoming(`${DIM}* 已取消引用${RESET}`);
+      return;
+    }
+    rl.prompt();
+    return;
+  }
   if (content === '/new') {
     printIncoming(`${DIM}* 本地部署一个 404 页面，随机分配编号...${RESET}`);
     startLocalServer().then((wss) => {
@@ -301,8 +500,19 @@ rl.on('line', (raw) => {
     return;
   }
   if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'msg', content }));
-    printOwnEcho(`[${fmtTime(Date.now())}] <${NAME}> ${content}`);
+    const payload = { type: 'msg', content };
+    if (pendingReplyTo) payload.replyTo = pendingReplyTo.id;
+    ws.send(JSON.stringify(payload));
+
+    let echo = `[${fmtTime(Date.now())}] <${NAME}> ${content}`;
+    if (pendingReplyTo) {
+      const r = pendingReplyTo;
+      echo = `${DIM}  ┌ <${r.from}> ${r.content}${RESET}\n${echo}`;
+      pendingReplyTo = null;
+      rl.setPrompt(PROMPT_NORMAL);
+    }
+    printOwnEcho(echo);
+    markLastAsPendingOwn(content);
   } else {
     printOwnEcho(`${DIM}* 没连上 (503)，消息没发出去${RESET}`);
   }
