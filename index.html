@@ -1,0 +1,800 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta name="theme-color" content="#000000" id="meta-theme-color" />
+<title>404 未找到</title>
+<script>
+  // Apply theme before paint to avoid flash. Default = dark.
+  (() => {
+    const saved = localStorage.getItem('clichat.theme');
+    const theme = saved === 'light' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', theme);
+  })();
+</script>
+<style>
+  :root {
+    --bg: #ffffff;
+    --card: #ffffff;
+    --fg: #000000;
+    --dim: #6b6b6b;
+    --muted: #9a9a9a;
+    --border: #e5e5e5;
+    --field: #f5f5f5;
+    --accent: #000000;
+    --accent-hover: #2a2a2a;
+    --accent-soft: #ececec;
+    --accent-fg: #ffffff;
+    --me: #000000;
+    --me-fg: #ffffff;
+    --them: #ffffff;
+    --them-fg: #000000;
+    --err: #b00020;
+    --warn: #8a6d00;
+    --ok: #1e7d3a;
+    --reply-bar: #000000;
+    --page-bg: #e5e5e5;
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #000000;
+    --card: #0a0a0a;
+    --fg: #ffffff;
+    --dim: #a0a0a0;
+    --muted: #6b6b6b;
+    --border: #2a2a2a;
+    --field: #141414;
+    --accent: #ffffff;
+    --accent-hover: #d4d4d4;
+    --accent-soft: #1f1f1f;
+    --accent-fg: #000000;
+    --me: #ffffff;
+    --me-fg: #000000;
+    --them: #0a0a0a;
+    --them-fg: #ffffff;
+    --err: #ff8080;
+    --warn: #ffd166;
+    --ok: #6ee7a0;
+    --reply-bar: #ffffff;
+    --page-bg: #000000;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+  html, body { height: 100%; }
+  body {
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overscroll-behavior: none;
+  }
+
+  .hidden { display: none !important; }
+
+  /* ===== Setup screen ===== */
+  #setup {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: max(env(safe-area-inset-top), 32px) 20px max(env(safe-area-inset-bottom), 24px);
+  }
+
+  .hero {
+    text-align: center;
+    padding: 24px 8px 8px;
+  }
+  .hero .icon {
+    width: 64px;
+    height: 64px;
+    margin: 0 auto 20px;
+    border-radius: 50%;
+    background: var(--accent-soft);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent);
+    font-size: 32px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .hero h1 {
+    margin: 0 0 12px;
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--fg);
+  }
+  .hero p {
+    margin: 0;
+    color: var(--dim);
+    font-size: 15px;
+    line-height: 1.55;
+  }
+  .hero p + p { margin-top: 4px; }
+
+  .form-card {
+    background: var(--card);
+    border-radius: 16px;
+    padding: 20px;
+    margin-top: 28px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.04);
+  }
+
+  .field { margin-bottom: 16px; }
+  .field:last-of-type { margin-bottom: 20px; }
+  .field label {
+    display: block;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--fg);
+    margin-bottom: 8px;
+  }
+  .input-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+  .field input {
+    width: 100%;
+    background: var(--field);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    font: inherit;
+    font-size: 15px;
+    color: var(--fg);
+    outline: none;
+    -webkit-appearance: none;
+    transition: border-color .15s, background .15s;
+  }
+  .field input:focus {
+    border-color: var(--accent);
+    background: var(--card);
+  }
+  .input-wrap.has-action input { padding-right: 42px; }
+  .input-action {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: transparent;
+    border: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    cursor: pointer;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .input-action:hover { color: var(--fg); background: var(--field); }
+  .input-action svg { width: 16px; height: 16px; }
+
+  .btn-primary {
+    width: 100%;
+    background: var(--accent);
+    color: var(--accent-fg);
+    border: 0;
+    border-radius: 10px;
+    padding: 14px;
+    font: inherit;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-primary:active { transform: scale(0.99); }
+  .btn-primary[disabled] { opacity: 0.6; cursor: not-allowed; }
+
+  .err-msg {
+    color: var(--err);
+    font-size: 13px;
+    min-height: 1em;
+    margin-bottom: 12px;
+    text-align: center;
+  }
+
+  /* ===== Chat screen ===== */
+  #chat-screen {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--bg);
+  }
+
+  #bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: max(env(safe-area-inset-top), 12px) 16px 12px;
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  #bar .back {
+    background: transparent;
+    border: 0;
+    padding: 6px;
+    margin-left: -6px;
+    cursor: pointer;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    border-radius: 8px;
+  }
+  #bar .back:hover { background: var(--field); }
+  #bar .back svg { width: 22px; height: 22px; }
+  #bar .title-block {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    line-height: 1.2;
+  }
+  #bar .title-block .room {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #bar .title-block .status {
+    font-size: 12px;
+    color: var(--dim);
+  }
+  #bar .title-block .status.ok   { color: var(--ok); }
+  #bar .title-block .status.warn { color: var(--warn); }
+  #bar .title-block .status.err  { color: var(--err); }
+
+  #log {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 8px 0;
+    -webkit-overflow-scrolling: touch;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .msg {
+    display: block;
+    padding: 4px 16px;
+    font-size: 15px;
+    line-height: 1.5;
+    color: var(--fg);
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+  .msg .ts {
+    color: var(--muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    margin-right: 6px;
+  }
+  .msg .from {
+    color: var(--dim);
+    font-weight: 600;
+    margin-right: 6px;
+  }
+  .msg.me {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    padding-left: 13px;
+  }
+  .msg.me .from {
+    color: var(--fg);
+  }
+
+  .msg .reply {
+    display: block;
+    color: var(--dim);
+    font-size: 13px;
+    border-left: 2px solid var(--border);
+    padding: 0 8px;
+    margin-bottom: 2px;
+  }
+  .msg .reply .reply-from { font-weight: 600; color: var(--fg); margin-right: 4px; }
+  .msg.me .reply { border-left-color: var(--reply-bar); }
+
+  .sys-line {
+    color: var(--dim);
+    font-size: 12px;
+    padding: 4px 16px;
+    font-style: italic;
+  }
+
+  #composer {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+    padding: 10px 12px max(env(safe-area-inset-bottom), 10px);
+    background: var(--card);
+    border-top: 1px solid var(--border);
+  }
+  #composer textarea {
+    flex: 1;
+    background: var(--field);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 10px 14px;
+    font: inherit;
+    font-size: 15px;
+    color: var(--fg);
+    outline: none;
+    resize: none;
+    max-height: 120px;
+    line-height: 1.4;
+    -webkit-appearance: none;
+  }
+  #composer textarea:focus {
+    border-color: var(--accent);
+    background: var(--card);
+  }
+  #composer .send {
+    background: var(--accent);
+    color: var(--accent-fg);
+    border: 0;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  #composer .send:hover { background: var(--accent-hover); }
+  #composer .send[disabled] { opacity: 0.4; cursor: not-allowed; }
+  #composer .send svg { width: 18px; height: 18px; }
+
+  /* Wider screens — keep it phone-shaped and centered */
+  @media (min-width: 640px) {
+    body { background: var(--page-bg); }
+    #setup, #chat-screen {
+      max-width: 480px;
+      width: 100%;
+      margin: 0 auto;
+      background: var(--bg);
+    }
+    #chat-screen { box-shadow: 0 0 24px rgba(0,0,0,0.06); }
+  }
+
+  /* ===== Theme toggle ===== */
+  .theme-toggle {
+    background: transparent;
+    border: 0;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    cursor: pointer;
+    color: var(--dim);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background .15s, color .15s;
+  }
+  .theme-toggle:hover { background: var(--field); color: var(--fg); }
+  .theme-toggle svg { width: 18px; height: 18px; }
+  .theme-toggle .icon-sun { display: none; }
+  .theme-toggle .icon-moon { display: block; }
+  :root[data-theme="dark"] .theme-toggle .icon-sun  { display: block; }
+  :root[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
+
+  #setup-toggle {
+    position: absolute;
+    top: max(env(safe-area-inset-top), 16px);
+    right: 16px;
+  }
+  #setup { position: relative; }
+</style>
+</head>
+<body>
+
+<!-- ===== Setup screen ===== -->
+<section id="setup">
+  <button type="button" class="theme-toggle" id="setup-toggle" title="切换主题" aria-label="切换主题">
+    <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+    <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+  </button>
+  <div class="hero">
+    <div class="icon" aria-hidden="true">!</div>
+    <h1>404 未找到</h1>
+    <p>服务器上没有找到请求的网址。</p>
+    <p>输入信息进入聊天室。</p>
+  </div>
+
+  <div class="form-card">
+    <div class="field">
+      <label for="f-server">服务器</label>
+      <div class="input-wrap has-action">
+        <input id="f-server" placeholder="wss://example.trycloudflare.com" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url" />
+        <button type="button" class="input-action" id="btn-paste" title="粘贴">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="f-room">房间号</label>
+      <div class="input-wrap">
+        <input id="f-room" placeholder="101" autocomplete="off" inputmode="text" />
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="f-name">代号</label>
+      <div class="input-wrap">
+        <input id="f-name" placeholder="代号" autocomplete="off" />
+      </div>
+    </div>
+
+    <div class="err-msg" id="setup-err"></div>
+    <button class="btn-primary" id="btn-connect" type="button">进入</button>
+  </div>
+</section>
+
+<!-- ===== Chat screen ===== -->
+<section id="chat-screen" class="hidden">
+  <header id="bar">
+    <button class="back" id="btn-leave" type="button" title="退出房间" aria-label="返回">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
+    <div class="title-block">
+      <div class="room" id="meta-room">房间</div>
+      <div class="status" id="status">未连接</div>
+    </div>
+    <button type="button" class="theme-toggle" id="chat-toggle" title="切换主题" aria-label="切换主题">
+      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+  </header>
+
+  <div id="log"></div>
+
+  <form id="composer" autocomplete="off">
+    <textarea id="input" rows="1" placeholder="输入消息" autocomplete="off"></textarea>
+    <button type="submit" class="send" id="send" disabled aria-label="发送">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+    </button>
+  </form>
+</section>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const setup = $('setup');
+  const chatScreen = $('chat-screen');
+  const log   = $('log');
+  const metaRoom = $('meta-room');
+  const statusEl = $('status');
+  const input = $('input');
+  const sendBtn = $('send');
+  const connectBtn = $('btn-connect');
+  const leaveBtn = $('btn-leave');
+  const setupErr = $('setup-err');
+  const pasteBtn = $('btn-paste');
+
+  const LS = {
+    server: 'clichat.server',
+    room:   'clichat.room',
+    name:   'clichat.name',
+    theme:  'clichat.theme',
+    lastIdPrefix: 'clichat.lastId.', // + room
+  };
+
+  // Theme toggle
+  const metaThemeColor = document.getElementById('meta-theme-color');
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem(LS.theme, theme);
+    if (metaThemeColor) {
+      metaThemeColor.setAttribute('content', theme === 'dark' ? '#000000' : '#ffffff');
+    }
+  }
+  function toggleTheme() {
+    const cur = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+    applyTheme(cur === 'dark' ? 'light' : 'dark');
+  }
+  document.getElementById('setup-toggle').addEventListener('click', toggleTheme);
+  document.getElementById('chat-toggle').addEventListener('click', toggleTheme);
+
+  $('f-server').value = localStorage.getItem(LS.server) || 'ws://127.0.0.1:8080';
+  $('f-room').value   = localStorage.getItem(LS.room)   || '';
+  $('f-name').value   = localStorage.getItem(LS.name)   || '';
+
+  let ws = null;
+  let attempt = 0;
+  let reconnectTimer = null;
+  let stopped = false;
+  let cfg = null;
+
+  const fmtTime = (ts) => {
+    const d = new Date(ts);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+
+  function setStatus(text, kind = '') {
+    statusEl.textContent = text;
+    statusEl.className = 'status ' + kind;
+  }
+
+  function isAtBottom() {
+    return log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+  }
+  function scrollToBottom() {
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function appendSys(text) {
+    const stick = isAtBottom();
+    const el = document.createElement('div');
+    el.className = 'sys-line';
+    el.textContent = text;
+    log.appendChild(el);
+    if (stick) scrollToBottom();
+  }
+
+  function appendMsg(m) {
+    const stick = isAtBottom();
+    const own = cfg && m.from === cfg.name;
+    const wrap = document.createElement('div');
+    wrap.className = 'msg' + (own ? ' me' : '');
+
+    if (m.replyTo) {
+      const r = document.createElement('div');
+      r.className = 'reply';
+      const rf = document.createElement('span');
+      rf.className = 'reply-from';
+      rf.textContent = m.replyTo.from + ':';
+      r.appendChild(rf);
+      r.appendChild(document.createTextNode(' ' + m.replyTo.content));
+      wrap.appendChild(r);
+    }
+
+    const ts = document.createElement('span');
+    ts.className = 'ts';
+    ts.textContent = fmtTime(m.ts);
+    wrap.appendChild(ts);
+
+    const from = document.createElement('span');
+    from.className = 'from';
+    from.textContent = m.from;
+    wrap.appendChild(from);
+
+    const body = document.createElement('span');
+    body.className = 'body';
+    body.textContent = m.content;
+    wrap.appendChild(body);
+
+    log.appendChild(wrap);
+    if (stick) scrollToBottom();
+  }
+
+  function rememberLastId(id) {
+    if (!id || !cfg) return;
+    const key = LS.lastIdPrefix + cfg.room;
+    const prev = Number(localStorage.getItem(key)) || 0;
+    if (id > prev) localStorage.setItem(key, String(id));
+  }
+
+  function getLastId() {
+    if (!cfg) return 0;
+    return Number(localStorage.getItem(LS.lastIdPrefix + cfg.room)) || 0;
+  }
+
+  function buildUrl() {
+    let base = cfg.server.trim();
+    base = base.replace(/^http:\/\//i, 'ws://').replace(/^https:\/\//i, 'wss://');
+    if (!/^wss?:\/\//i.test(base)) base = 'wss://' + base;
+    const u = new URL(base);
+    u.searchParams.set('name', cfg.name);
+    u.searchParams.set('room', cfg.room);
+    const since = getLastId();
+    if (since) u.searchParams.set('since', String(since));
+    return u.toString();
+  }
+
+  function connect() {
+    if (stopped) return;
+    setStatus(attempt ? `重连中 (第 ${attempt + 1} 次)…` : '连接中…', 'warn');
+    let url;
+    try { url = buildUrl(); }
+    catch (e) {
+      setStatus('服务器地址错误', 'err');
+      appendSys(`地址解析失败: ${e.message}`);
+      return;
+    }
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      setStatus('连接失败', 'err');
+      appendSys(`socket 打开失败: ${e.message}`);
+      scheduleReconnect();
+      return;
+    }
+
+    ws.addEventListener('open', () => {
+      attempt = 0;
+      setStatus(`代号 ${cfg.name}`);
+      sendBtn.disabled = !input.value.trim();
+      appendSys(`已落入 404 页面「${cfg.room}」，代号 ${cfg.name}`);
+    });
+
+    ws.addEventListener('message', (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === 'history') {
+        const arr = Array.isArray(msg.messages) ? msg.messages : [];
+        if (arr.length) appendSys(`离线期间 ${arr.length} 条留言`);
+        for (const m of arr) {
+          if (m.type === 'sys') appendSys(m.content);
+          else if (m.type === 'msg') appendMsg(m);
+          if (m.id) rememberLastId(m.id);
+        }
+        return;
+      }
+      if (msg.type === 'msg') {
+        appendMsg(msg);
+        if (msg.id) rememberLastId(msg.id);
+        return;
+      }
+      if (msg.type === 'sys') {
+        appendSys(msg.content);
+        return;
+      }
+    });
+
+    ws.addEventListener('close', (ev) => {
+      sendBtn.disabled = true;
+      const reason = ev.reason ? ` "${ev.reason}"` : '';
+      const detail = `code=${ev.code}${reason}`;
+      console.warn('[clichat] websocket closed', ev);
+      if (stopped) return;
+      if (ev.code === 4001) { setStatus('被拒绝: 缺少代号', 'err'); return; }
+      if (ev.code === 4002) { setStatus('被拒绝: 缺少房间号', 'err'); return; }
+      appendSys(`连接断开 (${detail})`);
+      attempt++;
+      scheduleReconnect(detail);
+    });
+
+    ws.addEventListener('error', (ev) => {
+      console.error('[clichat] websocket error', ev);
+    });
+  }
+
+  function scheduleReconnect(reason) {
+    const delay = Math.min(8000, 1000 * Math.pow(2, Math.max(0, attempt - 1)));
+    setStatus(`断开，${Math.round(delay/1000)}s 后重试…`, 'warn');
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => { if (!stopped) connect(); }, delay);
+  }
+
+  function disconnect() {
+    stopped = true;
+    clearTimeout(reconnectTimer);
+    if (ws && ws.readyState === WebSocket.OPEN) ws.close(1000, 'user left');
+    ws = null;
+  }
+
+  function send(content) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify({ type: 'msg', content }));
+    return true;
+  }
+
+  // ===== UI wiring =====
+  connectBtn.addEventListener('click', () => {
+    const server = $('f-server').value.trim();
+    const room   = $('f-room').value.trim();
+    const name   = $('f-name').value.trim();
+    setupErr.textContent = '';
+    if (!server) { setupErr.textContent = '请输入服务器地址'; return; }
+    if (!room)   { setupErr.textContent = '请输入房间号';     return; }
+    if (!name)   { setupErr.textContent = '请输入代号';       return; }
+
+    localStorage.setItem(LS.server, server);
+    localStorage.setItem(LS.room,   room);
+    localStorage.setItem(LS.name,   name);
+
+    cfg = { server, room, name };
+    stopped = false;
+    attempt = 0;
+
+    setup.classList.add('hidden');
+    chatScreen.classList.remove('hidden');
+    metaRoom.textContent = room;
+    log.innerHTML = '';
+    input.focus();
+    connect();
+  });
+
+  setup.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.tagName === 'INPUT') {
+      e.preventDefault();
+      connectBtn.click();
+    }
+  });
+
+  pasteBtn.addEventListener('click', async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) $('f-server').value = text.trim();
+    } catch {
+      $('f-server').focus();
+    }
+  });
+
+  leaveBtn.addEventListener('click', () => {
+    disconnect();
+    setStatus('未连接');
+    sendBtn.disabled = true;
+    chatScreen.classList.add('hidden');
+    setup.classList.remove('hidden');
+  });
+
+  // Auto-grow textarea
+  function autosize() {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+  }
+  input.addEventListener('input', () => {
+    autosize();
+    sendBtn.disabled = !input.value.trim() || !ws || ws.readyState !== WebSocket.OPEN;
+  });
+
+  // Enter to send, Shift+Enter for newline
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      $('composer').requestSubmit();
+    }
+  });
+
+  $('composer').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = input.value;
+    if (!text.trim()) return;
+    if (send(text.slice(0, 4000))) {
+      input.value = '';
+      autosize();
+      sendBtn.disabled = true;
+    }
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && ws && ws.readyState === WebSocket.CLOSED && !stopped) {
+      clearTimeout(reconnectTimer);
+      connect();
+    }
+  });
+
+  window.addEventListener('beforeunload', () => {
+    stopped = true;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.close(1000, 'page unload');
+  });
+})();
+</script>
+</body>
+</html>
