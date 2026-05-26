@@ -524,6 +524,58 @@
   let reconnectTimer = null;
   let stopped = false;
   let cfg = null;
+  let keyBytes = null;
+  let cleanServerUrl = null;
+
+  // ===== 加密工具 (镜像 crypto.js，浏览器版) =====
+  const NONCE_LEN = 12;
+  function b64urlEncodeBytes(bytes) {
+    let bin = '';
+    for (const b of bytes) bin += String.fromCharCode(b);
+    return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  }
+  function b64urlDecodeBytes(str) {
+    const pad = str.length % 4 === 0 ? '' : '='.repeat(4 - (str.length % 4));
+    const bin = atob(str.replace(/-/g,'+').replace(/_/g,'/') + pad);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  async function importAesKey(bytes) {
+    return crypto.subtle.importKey('raw', bytes, { name: 'AES-GCM' }, false, ['encrypt','decrypt']);
+  }
+  async function encryptStr(plaintext, kb) {
+    const key = await importAesKey(kb);
+    const nonce = crypto.getRandomValues(new Uint8Array(NONCE_LEN));
+    const data = new TextEncoder().encode(plaintext);
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name:'AES-GCM', iv: nonce }, key, data));
+    const out = new Uint8Array(NONCE_LEN + ct.length);
+    out.set(nonce, 0); out.set(ct, NONCE_LEN);
+    return b64urlEncodeBytes(out);
+  }
+  async function decryptStr(ciphertext, kb) {
+    const buf = b64urlDecodeBytes(ciphertext);
+    if (buf.length < NONCE_LEN + 16) throw new Error('ciphertext too short');
+    const nonce = buf.subarray(0, NONCE_LEN);
+    const body = buf.subarray(NONCE_LEN);
+    const key = await importAesKey(kb);
+    const pt = await crypto.subtle.decrypt({ name:'AES-GCM', iv: nonce }, key, body);
+    return new TextDecoder().decode(pt);
+  }
+  function parsePsk(urlString) {
+    let base = urlString.trim();
+    base = base.replace(/^http:\/\//i, 'ws://').replace(/^https:\/\//i, 'wss://');
+    if (!/^wss?:\/\//i.test(base)) base = 'wss://' + base;
+    const u = new URL(base);
+    const hash = u.hash.startsWith('#') ? u.hash.slice(1) : u.hash;
+    if (!hash) throw new Error('服务器地址没有带 PSK fragment (#k=...)');
+    const k = new URLSearchParams(hash).get('k');
+    if (!k) throw new Error('fragment 里找不到 k=...');
+    const kb = b64urlDecodeBytes(k);
+    if (kb.length !== 32) throw new Error(`PSK 长度应为 32 字节，实际 ${kb.length}`);
+    u.hash = '';
+    return { cleanUrl: u.toString(), keyBytes: kb };
+  }
 
   const fmtTime = (ts) => {
     const d = new Date(ts);
@@ -562,14 +614,14 @@
     const wrap = document.createElement('div');
     wrap.className = 'msg' + (own ? ' me' : '');
 
-    if (m.replyTo) {
+    if (m.replyToQuote) {
       const r = document.createElement('div');
       r.className = 'reply';
       const rf = document.createElement('span');
       rf.className = 'reply-from';
-      rf.textContent = m.replyTo.from + ':';
+      rf.textContent = m.replyToQuote.from + ':';
       r.appendChild(rf);
-      r.appendChild(document.createTextNode(' ' + m.replyTo.content));
+      r.appendChild(document.createTextNode(' ' + m.replyToQuote.snippet));
       wrap.appendChild(r);
     }
 
@@ -605,10 +657,7 @@
   }
 
   function buildUrl() {
-    let base = cfg.server.trim();
-    base = base.replace(/^http:\/\//i, 'ws://').replace(/^https:\/\//i, 'wss://');
-    if (!/^wss?:\/\//i.test(base)) base = 'wss://' + base;
-    const u = new URL(base);
+    const u = new URL(cleanServerUrl);
     u.searchParams.set('name', cfg.name);
     u.searchParams.set('room', cfg.room);
     const since = getLastId();
@@ -642,28 +691,45 @@
       appendSys(`已落入 404 页面「${cfg.room}」，代号 ${cfg.name}`);
     });
 
+    async function decryptInPlace(m) {
+      if (m.type !== 'msg' || typeof m.content !== 'string') return;
+      try {
+        const plaintext = await decryptStr(m.content, keyBytes);
+        const parsed = JSON.parse(plaintext);
+        m.content = typeof parsed.text === 'string' ? parsed.text : '';
+        if (parsed.quote && typeof parsed.quote === 'object') m.replyToQuote = parsed.quote;
+      } catch {
+        m.content = '<密钥不匹配，无法解密>';
+      }
+    }
+
+    let chain = Promise.resolve();
     ws.addEventListener('message', (ev) => {
-      let msg;
-      try { msg = JSON.parse(ev.data); } catch { return; }
-      if (msg.type === 'history') {
-        const arr = Array.isArray(msg.messages) ? msg.messages : [];
-        if (arr.length) appendSys(`离线期间 ${arr.length} 条留言`);
-        for (const m of arr) {
-          if (m.type === 'sys') appendSys(m.content);
-          else if (m.type === 'msg') appendMsg(m);
-          if (m.id) rememberLastId(m.id);
+      chain = chain.then(async () => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        if (msg.type === 'history') {
+          const arr = Array.isArray(msg.messages) ? msg.messages : [];
+          for (const m of arr) await decryptInPlace(m);
+          if (arr.length) appendSys(`离线期间 ${arr.length} 条留言`);
+          for (const m of arr) {
+            if (m.type === 'sys') appendSys(m.content);
+            else if (m.type === 'msg') appendMsg(m);
+            if (m.id) rememberLastId(m.id);
+          }
+          return;
         }
-        return;
-      }
-      if (msg.type === 'msg') {
-        appendMsg(msg);
-        if (msg.id) rememberLastId(msg.id);
-        return;
-      }
-      if (msg.type === 'sys') {
-        appendSys(msg.content);
-        return;
-      }
+        if (msg.type === 'msg') {
+          await decryptInPlace(msg);
+          appendMsg(msg);
+          if (msg.id) rememberLastId(msg.id);
+          return;
+        }
+        if (msg.type === 'sys') {
+          appendSys(msg.content);
+          return;
+        }
+      }).catch((err) => console.error('[clichat] message handler', err));
     });
 
     ws.addEventListener('close', (ev) => {
@@ -698,9 +764,10 @@
     ws = null;
   }
 
-  function send(content) {
+  async function send(content) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-    ws.send(JSON.stringify({ type: 'msg', content }));
+    const ciphertext = await encryptStr(JSON.stringify({ text: content, quote: null }), keyBytes);
+    ws.send(JSON.stringify({ type: 'msg', content: ciphertext }));
     return true;
   }
 
@@ -713,6 +780,12 @@
     if (!server) { setupErr.textContent = '请输入服务器地址'; return; }
     if (!room)   { setupErr.textContent = '请输入房间号';     return; }
     if (!name)   { setupErr.textContent = '请输入代号';       return; }
+
+    let parsed;
+    try { parsed = parsePsk(server); }
+    catch (e) { setupErr.textContent = e.message; return; }
+    cleanServerUrl = parsed.cleanUrl;
+    keyBytes = parsed.keyBytes;
 
     localStorage.setItem(LS.server, server);
     localStorage.setItem(LS.room,   room);
@@ -772,14 +845,18 @@
     }
   });
 
-  $('composer').addEventListener('submit', (e) => {
+  $('composer').addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = input.value;
     if (!text.trim()) return;
-    if (send(text.slice(0, 4000))) {
-      input.value = '';
-      autosize();
-      sendBtn.disabled = true;
+    sendBtn.disabled = true;
+    try {
+      if (await send(text.slice(0, 4000))) {
+        input.value = '';
+        autosize();
+      }
+    } catch (err) {
+      appendSys(`加密失败: ${err.message}`);
     }
   });
 

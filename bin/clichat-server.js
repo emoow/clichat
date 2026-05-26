@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
+import { generatePskB64url } from '../crypto.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVER_PATH = join(__dirname, '..', 'server.js');
@@ -70,7 +71,8 @@ function handleTunnelOutput(buf) {
     urlPrinted = true;
     clearInterval(spinnerInterval);
     process.stderr.write(`\r\x1b[K`); // clear spinner line
-    const wss = m[0].replace(/^https/, 'wss');
+    const psk = generatePskB64url();
+    const wss = `${m[0].replace(/^https/, 'wss')}#k=${psk}`;
     const sample = `clichat 「任意房间号」`;
     console.log('');
     console.log(`${GREEN}╔══════════════════════════════════════════════════════════════╗${RESET}`);

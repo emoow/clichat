@@ -95,12 +95,7 @@ wss.on('connection', (ws, req) => {
     if (!content) return;
     const out = { type: 'msg', id: nextId++, from: name, content, ts: now() };
     const replyId = Number(msg.replyTo);
-    if (Number.isFinite(replyId) && replyId > 0) {
-      const orig = history.get(room)?.find((m) => m.id === replyId);
-      if (orig) {
-        out.replyTo = { id: orig.id, from: orig.from, content: orig.content.slice(0, 80) };
-      }
-    }
+    if (Number.isFinite(replyId) && replyId > 0) out.replyTo = replyId;
     appendHistory(room, out);
     // 广播给所有人（包括发送者），让发送者也能拿到 id 落盘
     broadcast(room, out);

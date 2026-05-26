@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { encrypt, decrypt, parsePskFromUrl } from './crypto.js';
 
 function parseArgs(argv) {
   const out = {};
@@ -38,6 +39,21 @@ const DEFAULT_SERVER = 'ws://127.0.0.1:8080';
 let SERVER = args.server || process.env.CHAT_SERVER || DEFAULT_SERVER;
 let ROOM = args.room || process.env.CHAT_ROOM;
 let NAME = args.name || process.env.CHAT_NAME;
+let KEY_BYTES = null;
+
+function applyServerUrl(raw) {
+  try {
+    const { cleanUrl, keyBytes } = parsePskFromUrl(raw);
+    SERVER = cleanUrl;
+    KEY_BYTES = keyBytes;
+  } catch (err) {
+    console.error(`× ${err.message}`);
+    console.error(`  跑 clichat-server 拿一条带 #k=... 的 export CHAT_SERVER 行，再试。`);
+    process.exit(1);
+  }
+}
+
+applyServerUrl(SERVER);
 
 const DIM = '\x1b[90m';
 const CYAN = '\x1b[36m';
@@ -134,9 +150,9 @@ function printOwnEcho(line) {
 function renderMsg(m) {
   if (m.type === 'msg') {
     const main = `[${fmtTime(m.ts)}] <${m.from}> ${m.content}`;
-    if (m.replyTo) {
-      const r = m.replyTo;
-      const quote = `${DIM}  ┌ <${r.from}> ${r.content}${RESET}`;
+    if (m.replyToQuote) {
+      const r = m.replyToQuote;
+      const quote = `${DIM}  ┌ <${r.from}> ${r.snippet}${RESET}`;
       return `${quote}\n${main}`;
     }
     return main;
@@ -267,51 +283,73 @@ function connect() {
     printIncoming(`${DIM}* 文字回车发送 | /r 选消息引用 | /cowsay <文字> | Ctrl+L 清屏 | Ctrl+C 退出${RESET}`);
   });
 
-  ws.on('message', (raw) => {
-    let msg;
-    try { msg = JSON.parse(raw.toString()); } catch { return; }
-
-    if (msg.type === 'history') {
-      const incoming = Array.isArray(msg.messages) ? msg.messages : [];
-      // 用 id 做 key 合并去重，按 ts 排序后整文件重写
-      const local2 = loadLocalHistory(ROOM);
-      const byId = new Map();
-      for (const m of local2) if (m && m.id) byId.set(m.id, m);
-      for (const m of incoming) if (m && m.id) byId.set(m.id, m);
-      const merged = Array.from(byId.values()).sort((a, b) => (a.ts || 0) - (b.ts || 0));
-      rewriteLocalHistory(ROOM, merged);
-
-      if (incoming.length) {
-        printIncoming(`${DIM}--- 离线期间 ${incoming.length} 条留言 ---${RESET}`);
-        for (const m of incoming) {
-          const line = renderMsg(m);
-          if (line) printIncoming(line, m);
-        }
-        printIncoming(`${DIM}--- 历史回放结束，以下是实时 ---${RESET}`);
-      }
-      return;
+  // 解密一条服务端来的 msg：把 ciphertext 替换成明文，挂上 replyToQuote。
+  // 解密失败也返回，但 content 用占位文案，避免崩。
+  async function decryptInPlace(m) {
+    if (m.type !== 'msg' || typeof m.content !== 'string') return m;
+    try {
+      const plaintext = await decrypt(m.content, KEY_BYTES);
+      const parsed = JSON.parse(plaintext);
+      m.content = typeof parsed.text === 'string' ? parsed.text : '';
+      if (parsed.quote && typeof parsed.quote === 'object') m.replyToQuote = parsed.quote;
+    } catch {
+      m.content = '<密钥不匹配，无法解密>';
     }
+    return m;
+  }
 
-    if (msg.type === 'msg') {
-      appendLocalMessage(ROOM, msg);
-      // 自己发的消息已经乐观回显过了，不再重复打印
-      if (msg.from === NAME) {
-        // 给 echo 时压入的占位条目补上服务端分配的 id
-        const pending = pendingOwn.shift();
-        if (pending) {
-          pending.id = msg.id;
-          pending.selectable = true;
+  let chain = Promise.resolve();
+  ws.on('message', (raw) => {
+    chain = chain.then(async () => {
+      let msg;
+      try { msg = JSON.parse(raw.toString()); } catch { return; }
+
+      if (msg.type === 'history') {
+        const incoming = Array.isArray(msg.messages) ? msg.messages : [];
+        for (const m of incoming) await decryptInPlace(m);
+        // 用 id 做 key 合并去重，按 ts 排序后整文件重写
+        const local2 = loadLocalHistory(ROOM);
+        const byId = new Map();
+        for (const m of local2) if (m && m.id) byId.set(m.id, m);
+        for (const m of incoming) if (m && m.id) byId.set(m.id, m);
+        const merged = Array.from(byId.values()).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+        rewriteLocalHistory(ROOM, merged);
+
+        if (incoming.length) {
+          printIncoming(`${DIM}--- 离线期间 ${incoming.length} 条留言 ---${RESET}`);
+          for (const m of incoming) {
+            const line = renderMsg(m);
+            if (line) printIncoming(line, m);
+          }
+          printIncoming(`${DIM}--- 历史回放结束，以下是实时 ---${RESET}`);
         }
         return;
       }
-      const line = renderMsg(msg);
-      if (line) printIncoming(line, msg);
-      return;
-    }
 
-    // sys 之类
-    const line = renderMsg(msg);
-    if (line) printIncoming(line);
+      if (msg.type === 'msg') {
+        await decryptInPlace(msg);
+        appendLocalMessage(ROOM, msg);
+        // 自己发的消息已经乐观回显过了，不再重复打印
+        if (msg.from === NAME) {
+          // 给 echo 时压入的占位条目补上服务端分配的 id
+          const pending = pendingOwn.shift();
+          if (pending) {
+            pending.id = msg.id;
+            pending.selectable = true;
+          }
+          return;
+        }
+        const line = renderMsg(msg);
+        if (line) printIncoming(line, msg);
+        return;
+      }
+
+      // sys 之类
+      const line = renderMsg(msg);
+      if (line) printIncoming(line);
+    }).catch((err) => {
+      console.error(`message handler error: ${err.message}`);
+    });
   });
 
   ws.on('close', (code, reason) => {
@@ -499,6 +537,17 @@ function exitPicker(confirmed) {
   rl.prompt();
 }
 
+async function sendEncrypted(text, replyTo) {
+  const payload = {
+    text,
+    quote: replyTo ? { from: replyTo.from, snippet: replyTo.content } : null,
+  };
+  const ciphertext = await encrypt(JSON.stringify(payload), KEY_BYTES);
+  const wire = { type: 'msg', content: ciphertext };
+  if (replyTo) wire.replyTo = replyTo.id;
+  ws.send(JSON.stringify(wire));
+}
+
 rl.on('line', (raw) => {
   const content = raw.trim();
 
@@ -521,10 +570,10 @@ rl.on('line', (raw) => {
   if (content === '/new') {
     printIncoming(`${DIM}* 本地部署一个 404 页面，随机分配编号...${RESET}`);
     startLocalServer().then((wss) => {
-      SERVER = wss;
+      applyServerUrl(wss);
       ROOM = String(Math.floor(Math.random() * 900) + 100); // 100-999
       if (ws && ws.readyState === WebSocket.OPEN) ws.close();
-      printIncoming(`${DIM}* 拿到 404 域名 ${wss}，进入页面 ${ROOM} ...${RESET}`);
+      printIncoming(`${DIM}* 拿到 404 域名 ${SERVER}，进入页面 ${ROOM} ...${RESET}`);
       connect();
     }).catch((err) => {
       printIncoming(`${DIM}* 部署 404 失败: ${err.message}${RESET}`);
@@ -545,7 +594,9 @@ rl.on('line', (raw) => {
     }
     const bubble = '\n' + cowsay(text);
     if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'msg', content: bubble }));
+      sendEncrypted(bubble, null).catch((err) =>
+        printIncoming(`${DIM}* 加密失败: ${err.message}${RESET}`)
+      );
       printOwnEcho(`[${fmtTime(Date.now())}] <${NAME}>${bubble}`);
       markLastAsPendingOwn(bubble);
     } else {
@@ -554,14 +605,14 @@ rl.on('line', (raw) => {
     return;
   }
   if (ws?.readyState === WebSocket.OPEN) {
-    const payload = { type: 'msg', content };
-    if (pendingReplyTo) payload.replyTo = pendingReplyTo.id;
-    ws.send(JSON.stringify(payload));
+    const replySnap = pendingReplyTo;
+    sendEncrypted(content, replySnap).catch((err) =>
+      printIncoming(`${DIM}* 加密失败: ${err.message}${RESET}`)
+    );
 
     let echo = `[${fmtTime(Date.now())}] <${NAME}> ${content}`;
-    if (pendingReplyTo) {
-      const r = pendingReplyTo;
-      echo = `${DIM}  ┌ <${r.from}> ${r.content}${RESET}\n${echo}`;
+    if (replySnap) {
+      echo = `${DIM}  ┌ <${replySnap.from}> ${replySnap.content}${RESET}\n${echo}`;
       pendingReplyTo = null;
       rl.setPrompt(PROMPT_NORMAL);
     }

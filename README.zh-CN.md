@@ -166,7 +166,8 @@ tailscale funnel status   # 拿到一个稳定的 https URL
 用 `npm run tunnel` 代替 `clichat-server`，用 `npm run chat -- 404` 代替 `clichat 404`。
 
 **消息加密吗？**
-连接走的是 TLS（`wss://`）。Cloudflare 边缘能看到消息内容。没有端到端加密——和"靠 URL 共享"是同一种安全级别，别发敏感内容。
+是。端到端 AES-256-GCM。每次 `clichat-server` 启动会生成一个 32 字节随机 PSK，附在 `export CHAT_SERVER=...#k=...` 那条 URL 的 fragment 里。fragment 不会发到服务器，所以 Cloudflare 边缘和你的 server.js 都看不到密钥也看不到明文。
+拿到那条 export 行 = 拿到密钥；想踢人就重启 `clichat-server` 拿新 URL+新 PSK。
 
 **房间里没人时能正常退出吗？**
 能，`Ctrl+C` 始终能干净关闭，即使房间是空的。

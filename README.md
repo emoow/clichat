@@ -166,7 +166,8 @@ Open another terminal and run `caffeinate -i &`. Run `kill %1` to undo it.
 Use `npm run tunnel` instead of `clichat-server`, and `npm run chat -- 404` instead of `clichat 404`.
 
 **Is it encrypted?**
-The connection uses TLS (the `wss://`). Cloudflare can see message contents at the edge. No end-to-end encryption — treat it like any URL-based chat, don't send anything sensitive.
+Yes — end-to-end AES-256-GCM. Every `clichat-server` start generates a fresh 32-byte PSK and appends it to the printed URL as a fragment (`#k=...`). URL fragments aren't sent to servers, so Cloudflare and your `server.js` see only ciphertext.
+Whoever has the `export CHAT_SERVER=...` line has the key. Want to kick everyone? Restart `clichat-server` for a new URL + new PSK.
 
 **No one's in the room. Can I still leave?**
 Yes — `Ctrl+C` always shuts down cleanly, even when the room is empty.
