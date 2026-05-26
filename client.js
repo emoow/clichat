@@ -55,6 +55,43 @@ function ask(rl, question) {
   return new Promise((resolve) => rl.question(question, (ans) => resolve(ans.trim())));
 }
 
+function cowsay(text) {
+  const MAX = 40;
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    if (!cur) cur = w;
+    else if (cur.length + 1 + w.length <= MAX) cur += ' ' + w;
+    else { lines.push(cur); cur = w; }
+  }
+  if (cur) lines.push(cur);
+  if (!lines.length) lines.push('');
+
+  const width = Math.max(...lines.map((l) => l.length));
+  const top = ' ' + '_'.repeat(width + 2);
+  const bot = ' ' + '-'.repeat(width + 2);
+  let body;
+  if (lines.length === 1) {
+    body = `< ${lines[0].padEnd(width)} >`;
+  } else {
+    body = lines.map((l, i) => {
+      const p = l.padEnd(width);
+      if (i === 0) return `/ ${p} \\`;
+      if (i === lines.length - 1) return `\\ ${p} /`;
+      return `| ${p} |`;
+    }).join('\n');
+  }
+  const cow = [
+    '        \\   ^__^',
+    '         \\  (oo)\\_______',
+    '            (__)\\       )\\/\\',
+    '                ||----w |',
+    '                ||     ||',
+  ].join('\n');
+  return `${top}\n${body}\n${bot}\n${cow}`;
+}
+
 async function bootstrap() {
   // 房间号必须有；没有就交互问
   if (!ROOM) {
@@ -227,7 +264,7 @@ function connect() {
   ws.on('open', () => {
     attempt = 0;
     printIncoming(`${DIM}* 已落入 404 页面「${ROOM}」，代号 ${NAME}${RESET}`);
-    printIncoming(`${DIM}* 文字回车发送 | /r 选消息引用 | Ctrl+L 清屏 | Ctrl+C 退出${RESET}`);
+    printIncoming(`${DIM}* 文字回车发送 | /r 选消息引用 | /cowsay <文字> | Ctrl+L 清屏 | Ctrl+C 退出${RESET}`);
   });
 
   ws.on('message', (raw) => {
@@ -497,6 +534,23 @@ rl.on('line', (raw) => {
   if (content === '/clear' || content === '/refresh' || content === '/404') {
     process.stdout.write(CLEAR_SCREEN);
     rl.prompt();
+    return;
+  }
+  if (content === '/cowsay' || content.startsWith('/cowsay ')) {
+    const text = content.slice('/cowsay'.length).trim();
+    if (!text) {
+      printIncoming(`${DIM}* /cowsay 后面要带句子，比如: /cowsay hello${RESET}`);
+      rl.prompt();
+      return;
+    }
+    const bubble = '\n' + cowsay(text);
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'msg', content: bubble }));
+      printOwnEcho(`[${fmtTime(Date.now())}] <${NAME}>${bubble}`);
+      markLastAsPendingOwn(bubble);
+    } else {
+      printOwnEcho(`${DIM}* 没连上 (503)，消息没发出去${RESET}`);
+    }
     return;
   }
   if (ws?.readyState === WebSocket.OPEN) {
