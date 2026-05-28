@@ -728,7 +728,11 @@ function applyGameEvent(msg, silent = false) {
       lastBoardIdx: null,
       cursor: { x: 7, y: 7 },
     };
-    if (!silent) sysLine(`* ${by} 开了一局五子棋 (id=${id})，输入 /join 加入`);
+    if (!silent) {
+      sysLine(`* ${by} 开了一局五子棋 (id=${id})，输入 /join 加入`);
+      sysLine(`*   /join 加入对局 | /m 落子（方向键移动光标，回车确认，Esc 取消）`);
+      sysLine(`*   /resign 认输 | /cancel 取消邀请（仅发起者） | 五连即胜`);
+    }
     return;
   }
 
