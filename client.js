@@ -132,7 +132,7 @@ const rl = readline.createInterface({
 });
 
 function printIncoming(line, msg) {
-  if (mode === 'picker') {
+  if (mode === 'picker' || mode === 'chess-picker') {
     incomingQueue.push({ line, msg });
     return;
   }
@@ -280,7 +280,12 @@ function connect() {
   ws.on('open', () => {
     attempt = 0;
     printIncoming(`${DIM}* 已落入 404 页面「${ROOM}」，代号 ${NAME}${RESET}`);
-    printIncoming(`${DIM}* 文字回车发送 | /r 选消息引用 | /cowsay <文字> | Ctrl+L 清屏 | Ctrl+C 退出${RESET}`);
+    printIncoming(`${DIM}* 文字回车发送 | /r 引用 | /cowsay | /chess 五子棋 | Ctrl+L 清屏 | Ctrl+C 退出${RESET}`);
+    // 从本地历史恢复进行中的五子棋（应付服务端没下发 history 的场景）
+    try {
+      const localPast = loadLocalHistory(ROOM);
+      if (localPast.some((m) => m && m.game)) replayChessFromHistory(localPast);
+    } catch {}
   });
 
   // 解密一条服务端来的 msg：把 ciphertext 替换成明文，挂上 replyToQuote。
@@ -292,6 +297,7 @@ function connect() {
       const parsed = JSON.parse(plaintext);
       m.content = typeof parsed.text === 'string' ? parsed.text : '';
       if (parsed.quote && typeof parsed.quote === 'object') m.replyToQuote = parsed.quote;
+      if (parsed.game && typeof parsed.game === 'object') m.game = parsed.game;
     } catch {
       m.content = '<密钥不匹配，无法解密>';
     }
@@ -317,7 +323,13 @@ function connect() {
 
         if (incoming.length) {
           printIncoming(`${DIM}--- 离线期间 ${incoming.length} 条留言 ---${RESET}`);
-          for (const m of incoming) {
+          // 按 server id 顺序处理，让 chess reducer 看到正确序列
+          const inOrder = incoming.slice().sort((a, b) => (a.id || 0) - (b.id || 0));
+          for (const m of inOrder) {
+            if (m.game && m.game.kind === 'chess') {
+              applyGameEvent(m, false);
+              continue;
+            }
             const line = renderMsg(m);
             if (line) printIncoming(line, m);
           }
@@ -329,6 +341,11 @@ function connect() {
       if (msg.type === 'msg') {
         await decryptInPlace(msg);
         appendLocalMessage(ROOM, msg);
+        // 游戏控制消息：交给 reducer，不当聊天行渲染
+        if (msg.game && msg.game.kind === 'chess') {
+          applyGameEvent(msg, false);
+          return;
+        }
         // 自己发的消息已经乐观回显过了，不再重复打印
         if (msg.from === NAME) {
           // 给 echo 时压入的占位条目补上服务端分配的 id
@@ -537,16 +554,353 @@ function exitPicker(confirmed) {
   rl.prompt();
 }
 
-async function sendEncrypted(text, replyTo) {
+async function sendEncrypted(text, replyTo, game) {
   const payload = {
     text,
     quote: replyTo ? { from: replyTo.from, snippet: replyTo.content } : null,
   };
+  if (game) payload.game = game;
   const ciphertext = await encrypt(JSON.stringify(payload), KEY_BYTES);
   const wire = { type: 'msg', content: ciphertext };
   if (replyTo) wire.replyTo = replyTo.id;
   ws.send(JSON.stringify(wire));
 }
+
+async function sendGame(game) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    printIncoming(`${DIM}* 没连上 (503)，操作没发出去${RESET}`);
+    return;
+  }
+  try {
+    await sendEncrypted('', null, game);
+  } catch (err) {
+    printIncoming(`${DIM}* 加密失败: ${err.message}${RESET}`);
+  }
+}
+
+// =================== chess (五子棋) ===================
+const BOARD_SIZE = 16;
+const BOARD_CELLS = BOARD_SIZE * BOARD_SIZE;
+const COL_LABELS = 'ABCDEFGHIJKLMNOP';
+const COLOR_BLACK = 1;
+const COLOR_WHITE = 2;
+const STONE_BLACK = '●'; // ●
+const STONE_WHITE = '○'; // ○
+const STONE_EMPTY = '·'; // ·
+
+let chess = null;
+// chess shape: { gameId, black, white, board:Uint8Array(256), moves:[{x,y,by,id}],
+//   turn:'black'|'white', status:'pending'|'playing'|'finished',
+//   winner, winLine, lastBoardIdx, cursor:{x,y} }
+
+const idxOf = (x, y) => y * BOARD_SIZE + x;
+
+function checkWin(board, x, y, color) {
+  const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
+  for (const [dx, dy] of dirs) {
+    const line = [{ x, y }];
+    for (const s of [-1, 1]) {
+      let i = 1;
+      while (true) {
+        const nx = x + dx * i * s;
+        const ny = y + dy * i * s;
+        if (nx < 0 || nx >= BOARD_SIZE || ny < 0 || ny >= BOARD_SIZE) break;
+        if (board[idxOf(nx, ny)] !== color) break;
+        line.push({ x: nx, y: ny });
+        i++;
+      }
+    }
+    if (line.length >= 5) {
+      // Sort along axis so the highlighted line looks nice
+      line.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+      return line.slice(0, 5);
+    }
+  }
+  return null;
+}
+
+function renderChessBoard(g, cursor) {
+  if (!g) return '';
+  const winSet = new Set();
+  if (g.winLine) for (const p of g.winLine) winSet.add(idxOf(p.x, p.y));
+  const lines = [];
+  // Header
+  let header = '   ';
+  for (let x = 0; x < BOARD_SIZE; x++) header += ' ' + COL_LABELS[x];
+  lines.push(`${DIM}${header}${RESET}`);
+  for (let y = 0; y < BOARD_SIZE; y++) {
+    const rowLabel = String(y + 1).padStart(2, ' ');
+    let row = `${DIM}${rowLabel}${RESET} `;
+    for (let x = 0; x < BOARD_SIZE; x++) {
+      const v = g.board[idxOf(x, y)];
+      let cell = v === COLOR_BLACK ? STONE_BLACK : v === COLOR_WHITE ? STONE_WHITE : STONE_EMPTY;
+      if (winSet.has(idxOf(x, y))) cell = `${CYAN}${cell}${RESET}`;
+      else if (v === 0) cell = `${DIM}${cell}${RESET}`;
+      const isCursor = cursor && cursor.x === x && cursor.y === y;
+      if (isCursor) cell = `${REVERSE}${cell}${RESET}`;
+      row += (x === 0 ? '' : ' ') + cell;
+    }
+    lines.push(row);
+  }
+  // Status footer
+  const blackTag = `${STONE_BLACK} ${g.black}`;
+  const whiteTag = g.white ? `${STONE_WHITE} ${g.white}` : `${DIM}${STONE_WHITE} 待加入${RESET}`;
+  let footer;
+  if (g.status === 'pending') {
+    footer = `${blackTag}  vs  ${whiteTag}     ${DIM}/join 加入${RESET}`;
+  } else if (g.status === 'playing') {
+    const turnName = g.turn === 'black' ? `${STONE_BLACK} ${g.black}` : `${STONE_WHITE} ${g.white}`;
+    footer = `${blackTag}  vs  ${whiteTag}     轮到 ${turnName}`;
+  } else {
+    let result;
+    if (g.winner) {
+      const stone = g.winner === g.black ? STONE_BLACK : STONE_WHITE;
+      result = `${CYAN}${stone} ${g.winner} 胜！${RESET}`;
+    } else {
+      result = `${DIM}平局${RESET}`;
+    }
+    footer = `${blackTag}  vs  ${whiteTag}     ${result}`;
+  }
+  lines.push('');
+  lines.push(footer);
+  return lines.join('\n');
+}
+
+function printChessBoard() {
+  if (!chess) return;
+  const cursor = mode === 'chess-picker' ? chess.cursor : null;
+  const formatted = renderChessBoard(chess, cursor);
+  if (mode === 'picker') {
+    // reply-picker 占着屏幕，不能直接打印（会打乱光标定位）；排队
+    incomingQueue.push({ line: formatted, msg: null });
+    return;
+  }
+  // Push as a new rendered entry so it scrolls naturally with the chat log.
+  process.stdout.write(CLEAR_LINE + formatted + '\n');
+  trackRender(formatted, null);
+  chess.lastBoardIdx = rendered.length - 1;
+  rl.prompt(true);
+}
+
+function redrawBoardInPlace() {
+  if (!chess || chess.lastBoardIdx == null) return;
+  const idx = chess.lastBoardIdx;
+  if (idx < 0 || idx >= rendered.length) return;
+  const cursor = mode === 'chess-picker' ? chess.cursor : null;
+  const formatted = renderChessBoard(chess, cursor);
+  const r = rendered[idx];
+  r.formatted = formatted;
+  r.height = formatted.split('\n').length;
+  const up = rowsToTopOf(idx);
+  process.stdout.write(`\x1b[${up}A\r`);
+  const lines = formatted.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    process.stdout.write('\x1b[K' + lines[i]);
+    if (i < lines.length - 1) process.stdout.write('\n');
+  }
+  process.stdout.write('\r');
+  const down = rowsBelowBottomOf(idx);
+  if (down > 0) process.stdout.write(`\x1b[${down}B`);
+}
+
+function sysLine(text) {
+  printIncoming(`${DIM}${text}${RESET}`);
+}
+
+function applyGameEvent(msg, silent = false) {
+  const g = msg.game;
+  if (!g || g.kind !== 'chess') return;
+  const by = msg.from;
+  const id = msg.id;
+
+  if (g.action === 'invite') {
+    if (chess && chess.status !== 'finished') return; // already running, ignore
+    chess = {
+      gameId: id,
+      black: by,
+      white: null,
+      board: new Uint8Array(BOARD_CELLS),
+      moves: [],
+      turn: 'black',
+      status: 'pending',
+      winner: null,
+      winLine: null,
+      lastBoardIdx: null,
+      cursor: { x: 7, y: 7 },
+    };
+    if (!silent) sysLine(`* ${by} 开了一局五子棋 (id=${id})，输入 /join 加入`);
+    return;
+  }
+
+  if (!chess || chess.gameId !== g.gameId) return;
+
+  if (g.action === 'join') {
+    if (chess.status !== 'pending') return;
+    if (by === chess.black) return;
+    chess.white = by;
+    chess.status = 'playing';
+    chess.turn = 'black';
+    if (!silent) {
+      sysLine(`* ${by} 加入！${STONE_BLACK} ${chess.black}  vs  ${STONE_WHITE} ${chess.white}，黑先`);
+      printChessBoard();
+    }
+    return;
+  }
+
+  if (g.action === 'move') {
+    if (chess.status !== 'playing') return;
+    const expectedColor = chess.turn === 'black' ? COLOR_BLACK : COLOR_WHITE;
+    const expectedName = chess.turn === 'black' ? chess.black : chess.white;
+    if (by !== expectedName) return; // not their turn
+    const x = Number(g.x);
+    const y = Number(g.y);
+    if (!Number.isInteger(x) || !Number.isInteger(y)) return;
+    if (x < 0 || x >= BOARD_SIZE || y < 0 || y >= BOARD_SIZE) return;
+    if (chess.board[idxOf(x, y)] !== 0) return;
+    chess.board[idxOf(x, y)] = expectedColor;
+    chess.moves.push({ x, y, by, id });
+    const win = checkWin(chess.board, x, y, expectedColor);
+    if (win) {
+      chess.winner = by;
+      chess.winLine = win;
+      chess.status = 'finished';
+    } else if (chess.moves.length >= BOARD_CELLS) {
+      chess.status = 'finished';
+    } else {
+      chess.turn = chess.turn === 'black' ? 'white' : 'black';
+      // Move cursor near last move for the next player's convenience
+      chess.cursor = { x, y };
+    }
+    if (mode === 'chess-picker') exitChessPicker(false);
+    if (!silent) {
+      const stone = expectedColor === COLOR_BLACK ? STONE_BLACK : STONE_WHITE;
+      const coord = `${COL_LABELS[x]}${y + 1}`;
+      sysLine(`* ${stone} ${by} 落子 ${coord}`);
+      printChessBoard();
+      if (chess.status === 'finished') {
+        if (chess.winner) sysLine(`* 五子棋: ${chess.winner} 胜！`);
+        else sysLine(`* 五子棋: 平局`);
+        chess = null;
+      }
+    } else if (chess.status === 'finished') {
+      // Replay path: keep chess set so caller can render final board, but we won't print here.
+    }
+    return;
+  }
+
+  if (g.action === 'resign') {
+    if (chess.status !== 'playing') return;
+    if (by !== chess.black && by !== chess.white) return;
+    chess.winner = by === chess.black ? chess.white : chess.black;
+    chess.status = 'finished';
+    if (mode === 'chess-picker') exitChessPicker(false);
+    if (!silent) {
+      printChessBoard();
+      sysLine(`* ${by} 认输，${chess.winner} 胜`);
+      chess = null;
+    }
+    return;
+  }
+
+  if (g.action === 'cancel') {
+    if (chess.status !== 'pending') return;
+    if (by !== chess.black) return;
+    if (!silent) sysLine(`* ${by} 取消了五子棋邀请`);
+    chess = null;
+    return;
+  }
+}
+
+function replayChessFromHistory(messages) {
+  // Reset any current game; messages is the merged sorted history.
+  chess = null;
+  const sorted = messages
+    .filter((m) => m && m.game && m.game.kind === 'chess' && Number.isFinite(m.id))
+    .sort((a, b) => a.id - b.id);
+  for (const m of sorted) applyGameEvent(m, true);
+  if (chess) {
+    if (chess.status === 'pending') {
+      sysLine(`* 进行中: ${chess.black} 等待对手 /join`);
+    } else if (chess.status === 'playing') {
+      printChessBoard();
+      const turnName = chess.turn === 'black' ? chess.black : chess.white;
+      sysLine(`* 五子棋进行中，轮到 ${turnName}`);
+    } else if (chess.status === 'finished') {
+      printChessBoard();
+      if (chess.winner) sysLine(`* 上一局: ${chess.winner} 胜`);
+      chess = null;
+    }
+  }
+}
+
+// =================== chess picker (方向键走子) ===================
+function enterChessPicker() {
+  if (!chess || chess.status !== 'playing') {
+    printIncoming(`${DIM}* 当前没有进行中的五子棋${RESET}`);
+    return;
+  }
+  const me = NAME;
+  const myTurn = chess.turn === 'black' ? chess.black : chess.white;
+  if (myTurn !== me) {
+    printIncoming(`${DIM}* 还没轮到你${RESET}`);
+    return;
+  }
+  if (chess.lastBoardIdx == null || chess.lastBoardIdx >= rendered.length) {
+    // Board not on screen — print one fresh
+    printChessBoard();
+  }
+  const rows = process.stdout.rows || 24;
+  if (rowsToTopOf(chess.lastBoardIdx) >= rows - 1) {
+    // Board scrolled off; print fresh one at the bottom
+    printChessBoard();
+  }
+  // Erase the "> /m" echo line and any stray prompt
+  process.stdout.write(UP_ONE + CLEAR_LINE + '\x1b[J');
+  mode = 'chess-picker';
+  savedKeypressListeners = process.stdin.listeners('keypress').slice();
+  process.stdin.removeAllListeners('keypress');
+  process.stdin.on('keypress', chessPickerKeypress);
+  redrawBoardInPlace();
+}
+
+function exitChessPicker(confirmed) {
+  process.stdin.removeListener('keypress', chessPickerKeypress);
+  for (const l of savedKeypressListeners) process.stdin.on('keypress', l);
+  savedKeypressListeners = [];
+  mode = 'normal';
+  // Repaint board without cursor so it sits cleanly above the prompt.
+  redrawBoardInPlace();
+  if (confirmed && chess && chess.cursor) {
+    const { x, y } = chess.cursor;
+    sendGame({ kind: 'chess', action: 'move', gameId: chess.gameId, x, y });
+  }
+  while (incomingQueue.length) {
+    const item = incomingQueue.shift();
+    process.stdout.write(item.line + '\n');
+    trackRender(item.line, item.msg);
+  }
+  rl.setPrompt(PROMPT_NORMAL);
+  rl.prompt();
+}
+
+function chessPickerKeypress(_, key) {
+  if (!key || !chess) return;
+  const c = chess.cursor;
+  if (key.name === 'up' && c.y > 0) { c.y--; redrawBoardInPlace(); return; }
+  if (key.name === 'down' && c.y < BOARD_SIZE - 1) { c.y++; redrawBoardInPlace(); return; }
+  if (key.name === 'left' && c.x > 0) { c.x--; redrawBoardInPlace(); return; }
+  if (key.name === 'right' && c.x < BOARD_SIZE - 1) { c.x++; redrawBoardInPlace(); return; }
+  if (key.name === 'return') {
+    if (chess.board[idxOf(c.x, c.y)] !== 0) return; // occupied: ignore
+    exitChessPicker(true);
+    return;
+  }
+  if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
+    exitChessPicker(false);
+    return;
+  }
+}
+// =================== /chess ===================
 
 rl.on('line', (raw) => {
   const content = raw.trim();
@@ -554,6 +908,72 @@ rl.on('line', (raw) => {
   // /r 进入回复选择模式
   if (content === '/r' || content === '/reply') {
     enterPicker();
+    return;
+  }
+
+  // 五子棋命令
+  if (content === '/chess') {
+    if (chess && chess.status !== 'finished') {
+      printIncoming(`${DIM}* 已经有一局五子棋在进行（${chess.status}）${RESET}`);
+      rl.prompt();
+      return;
+    }
+    sendGame({ kind: 'chess', action: 'invite', gameId: 0 });
+    rl.prompt();
+    return;
+  }
+  if (content === '/join') {
+    if (!chess || chess.status !== 'pending') {
+      printIncoming(`${DIM}* 没有等待加入的五子棋${RESET}`);
+      rl.prompt();
+      return;
+    }
+    if (chess.black === NAME) {
+      printIncoming(`${DIM}* 你是发起者，不用 /join${RESET}`);
+      rl.prompt();
+      return;
+    }
+    sendGame({ kind: 'chess', action: 'join', gameId: chess.gameId });
+    rl.prompt();
+    return;
+  }
+  if (content === '/m' || content === '/move') {
+    enterChessPicker();
+    return;
+  }
+  if (content === '/resign') {
+    if (!chess || chess.status !== 'playing') {
+      printIncoming(`${DIM}* 没有正在进行的对局${RESET}`);
+      rl.prompt();
+      return;
+    }
+    if (NAME !== chess.black && NAME !== chess.white) {
+      printIncoming(`${DIM}* 只有对局双方能认输${RESET}`);
+      rl.prompt();
+      return;
+    }
+    sendGame({ kind: 'chess', action: 'resign', gameId: chess.gameId });
+    rl.prompt();
+    return;
+  }
+  if (content === '/cancel') {
+    if (!chess || chess.status !== 'pending') {
+      printIncoming(`${DIM}* 没有可取消的邀请${RESET}`);
+      rl.prompt();
+      return;
+    }
+    if (NAME !== chess.black) {
+      printIncoming(`${DIM}* 只有发起者能取消${RESET}`);
+      rl.prompt();
+      return;
+    }
+    sendGame({ kind: 'chess', action: 'cancel', gameId: chess.gameId });
+    rl.prompt();
+    return;
+  }
+  if (content === '/help' || content === '/?') {
+    printIncoming(`${DIM}* 命令: /chess /join /m /resign /cancel | /r 引用 | /cowsay | /new | /clear${RESET}`);
+    rl.prompt();
     return;
   }
 
