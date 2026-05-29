@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { encrypt, decrypt, parsePskFromUrl } from './crypto.js';
+import * as gm from './games/goldminer.js';
 
 function parseArgs(argv) {
   const out = {};
@@ -57,6 +58,7 @@ applyServerUrl(SERVER);
 
 const DIM = '\x1b[90m';
 const CYAN = '\x1b[36m';
+const YELLOW = '\x1b[33m';
 const RESET = '\x1b[0m';
 const CLEAR_LINE = '\r\x1b[K';
 const UP_ONE = '\x1b[1A';
@@ -132,10 +134,11 @@ const rl = readline.createInterface({
 });
 
 function printIncoming(line, msg) {
-  if (mode === 'picker' || mode === 'chess-picker') {
+  if (mode === 'picker' || mode === 'chess-picker' || mode === 'goldminer-aim') {
     incomingQueue.push({ line, msg });
-    // chess-picker 期间消息只是排队，刷一下棋盘 footer 把数量亮出来
+    // picker 期间消息只是排队，刷一下棋盘 footer 把数量亮出来
     if (mode === 'chess-picker') redrawBoardInPlace();
+    else if (mode === 'goldminer-aim') redrawGoldminerInPlace();
     return;
   }
   process.stdout.write(CLEAR_LINE + line + '\n');
@@ -270,6 +273,15 @@ function startLocalServer() {
 }
 
 function connect() {
+  // 重连：清掉旧动画 / 模式残留，避免幽灵 tick
+  clearGoldminerInterval();
+  clearGoldminerTurnTimer();
+  if (mode === 'goldminer-aim') {
+    process.stdin.removeListener('keypress', goldminerKeypress);
+    for (const l of savedKeypressListeners) process.stdin.on('keypress', l);
+    savedKeypressListeners = [];
+    mode = 'normal';
+  }
   ensureHistoryDir();
   const local = loadLocalHistory(ROOM);
   const lastId = maxId(local);
@@ -282,11 +294,12 @@ function connect() {
   ws.on('open', () => {
     attempt = 0;
     printIncoming(`${DIM}* 已落入 404 页面「${ROOM}」，代号 ${NAME}${RESET}`);
-    printIncoming(`${DIM}* 文字回车发送 | /r 引用 | /cowsay | /chess 五子棋 | Ctrl+L 清屏 | Ctrl+C 退出${RESET}`);
-    // 从本地历史恢复进行中的五子棋（应付服务端没下发 history 的场景）
+    printIncoming(`${DIM}* 文字回车发送 | /r 引用 | /cowsay | /chess 五子棋 | /goldminer 黄金矿工 | /help${RESET}`);
+    // 从本地历史恢复进行中的游戏（应付服务端没下发 history 的场景）
     try {
       const localPast = loadLocalHistory(ROOM);
-      if (localPast.some((m) => m && m.game)) replayChessFromHistory(localPast);
+      if (localPast.some((m) => m && m.game && m.game.kind === 'chess')) replayChessFromHistory(localPast);
+      if (localPast.some((m) => m && m.game && m.game.kind === 'goldminer')) replayGoldminerFromHistory(localPast);
     } catch {}
   });
 
@@ -332,6 +345,10 @@ function connect() {
               applyGameEvent(m, false);
               continue;
             }
+            if (m.game && m.game.kind === 'goldminer') {
+              applyGoldminerEvent(m, false);
+              continue;
+            }
             const line = renderMsg(m);
             if (line) printIncoming(line, m);
           }
@@ -346,6 +363,10 @@ function connect() {
         // 游戏控制消息：交给 reducer，不当聊天行渲染
         if (msg.game && msg.game.kind === 'chess') {
           applyGameEvent(msg, false);
+          return;
+        }
+        if (msg.game && msg.game.kind === 'goldminer') {
+          applyGoldminerEvent(msg, false);
           return;
         }
         // 自己发的消息已经乐观回显过了，不再重复打印
@@ -424,10 +445,14 @@ function trackRender(formatted, msg) {
   rendered.push(entry);
   if (rendered.length > RENDERED_LIMIT) {
     rendered.shift();
-    // rendered 滚动后，缓存的索引也要一起左移，否则 redrawBoardInPlace 会更新错位置
+    // rendered 滚动后，缓存的索引也要一起左移，否则 in-place 重画会更新错位置
     if (chess && typeof chess.lastBoardIdx === 'number') {
       chess.lastBoardIdx--;
       if (chess.lastBoardIdx < 0) chess.lastBoardIdx = null;
+    }
+    if (goldminer && typeof goldminer.lastBoardIdx === 'number') {
+      goldminer.lastBoardIdx--;
+      if (goldminer.lastBoardIdx < 0) goldminer.lastBoardIdx = null;
     }
   }
 }
@@ -737,13 +762,15 @@ function applyGameEvent(msg, silent = false) {
       status: 'pending',
       winner: null,
       winLine: null,
+      matchPoint: false,
+      pendingWinLine: null,
       lastBoardIdx: null,
       cursor: { x: 7, y: 7 },
     };
     if (!silent) {
       sysLine(`* ${by} 开了一局五子棋 (id=${id})，输入 /join 加入`);
       sysLine(`*   /join 加入对局 | /m 落子（方向键移动光标，回车确认，Esc 取消）`);
-      sysLine(`*   /resign 认输 | /cancel 取消邀请（仅发起者） | 五连即胜`);
+      sysLine(`*   /resign 认输 | /cancel 取消邀请（仅发起者） | 黑成五后白可再下一手，若白也成五则平局`);
     }
     return;
   }
@@ -928,6 +955,377 @@ function chessPickerKeypress(s, key) {
 }
 // =================== /chess ===================
 
+// =================== goldminer (黄金矿工) ===================
+let goldminer = null;
+// goldminer shape: { gameId, seed, status, players[], currentIdx, scores{}, map[],
+//                    turnEndsAt, hook{phase,angle,length,carrying,swingStart,descendTarget,fireAt},
+//                    lastBoardIdx, gantTurnIds:Set<string> }
+let goldminerInterval = null;        // animation tick, only while in aim mode
+let goldminerTurnTimer = null;       // active player's hard deadline, lives across aim enter/exit
+const TURN_MS = 30000;
+const ANIM_INTERVAL_MS = 80;
+
+function clearGoldminerInterval() {
+  if (goldminerInterval) {
+    clearInterval(goldminerInterval);
+    goldminerInterval = null;
+  }
+}
+
+function clearGoldminerTurnTimer() {
+  if (goldminerTurnTimer) {
+    clearTimeout(goldminerTurnTimer);
+    goldminerTurnTimer = null;
+  }
+}
+
+function renderGoldminerEntry() {
+  if (!goldminer) return '';
+  const palette = { DIM, CYAN, RESET, REVERSE, YELLOW };
+  const queued = mode === 'goldminer-aim' ? incomingQueue.length : 0;
+  const board = gm.renderFrame(goldminer, palette);
+  const footer = gm.renderFooter(goldminer, palette, queued);
+  return board + '\n' + footer;
+}
+
+function printGoldminerBoard() {
+  if (!goldminer) return;
+  const formatted = renderGoldminerEntry();
+  process.stdout.write(CLEAR_LINE + formatted + '\n');
+  trackRender(formatted, null);
+  goldminer.lastBoardIdx = rendered.length - 1;
+  if (mode === 'normal') rl.prompt(true);
+}
+
+function redrawGoldminerInPlace() {
+  if (!goldminer || goldminer.lastBoardIdx == null) return;
+  const idx = goldminer.lastBoardIdx;
+  if (idx < 0 || idx >= rendered.length) return;
+  const formatted = renderGoldminerEntry();
+  const r = rendered[idx];
+  // Height should stay constant (gm.renderFrame and renderFooter both produce a stable line count
+  // for a given status). We re-cache to be safe.
+  r.formatted = formatted;
+  r.height = formatted.split('\n').length;
+  const up = rowsToTopOf(idx);
+  process.stdout.write(`\x1b[${up}A\r`);
+  const lines = formatted.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    process.stdout.write('\x1b[K' + lines[i]);
+    if (i < lines.length - 1) process.stdout.write('\n');
+  }
+  process.stdout.write('\r');
+  const down = rowsBelowBottomOf(idx);
+  if (down > 0) process.stdout.write(`\x1b[${down}B`);
+}
+
+function gmSysLine(text) {
+  printIncoming(`${DIM}${text}${RESET}`);
+}
+
+function goldminerScoreInit(players) {
+  const s = {};
+  for (const p of players) s[p] = 0;
+  return s;
+}
+
+function applyGoldminerEvent(msg, silent = false) {
+  const g = msg.game;
+  if (!g || g.kind !== 'goldminer') return;
+  const by = msg.from;
+  const id = msg.id;
+
+  if (g.action === 'invite') {
+    if (goldminer && goldminer.status !== 'finished') return; // already running, ignore
+    const seed = Number(g.seed) >>> 0;
+    goldminer = {
+      gameId: id,
+      seed,
+      status: 'pending',
+      players: [by],
+      currentIdx: 0,
+      scores: { [by]: 0 },
+      map: gm.generateMap(seed),
+      turnEndsAt: null,
+      hook: null,
+      lastBoardIdx: null,
+    };
+    if (!silent) {
+      gmSysLine(`* ${by} 开了一局黄金矿工 (id=${id}, seed=${seed})`);
+      gmSysLine(`*   /join 加入 | /start 发起者开始 | /g 进入瞄准（钟摆 + Return 放钩，Esc 结束回合）`);
+      printGoldminerBoard();
+    }
+    return;
+  }
+
+  if (!goldminer || goldminer.gameId !== g.gameId) return;
+
+  if (g.action === 'join') {
+    if (goldminer.status !== 'pending') return;
+    if (goldminer.players.includes(by)) return;
+    goldminer.players.push(by);
+    goldminer.scores[by] = 0;
+    if (!silent) {
+      gmSysLine(`* ${by} 加入矿场（${goldminer.players.length} 人）`);
+      redrawGoldminerInPlace();
+    }
+    return;
+  }
+
+  if (g.action === 'start') {
+    if (goldminer.status !== 'pending') return;
+    if (by !== goldminer.players[0]) return; // only inviter
+    if (goldminer.players.length < 1) return;
+    goldminer.status = 'playing';
+    goldminer.currentIdx = 0;
+    if (!silent) {
+      gmSysLine(`* 矿场开工！顺序: ${goldminer.players.join(' -> ')}`);
+      redrawGoldminerInPlace();
+      beginLocalTurnIfActive();
+    }
+    return;
+  }
+
+  if (g.action === 'shot') {
+    if (goldminer.status !== 'playing') return;
+    if (by !== goldminer.players[goldminer.currentIdx]) return; // only current player
+    const hitId = g.hitId == null ? null : Number(g.hitId);
+    const points = Number.isFinite(g.points) ? g.points : 0;
+    const angleDeg = Number.isFinite(g.angleDeg) ? g.angleDeg : 0;
+    let hitItem = null;
+    if (hitId != null) {
+      const idxItem = goldminer.map.findIndex((it) => it.id === hitId);
+      if (idxItem < 0) return; // already removed (duplicate echo or out-of-order replay)
+      hitItem = goldminer.map[idxItem];
+      goldminer.map.splice(idxItem, 1);
+    }
+    goldminer.scores[by] = (goldminer.scores[by] || 0) + points;
+    if (!silent) {
+      const charish = hitItem ? (gm.ITEMS[hitItem.kind]?.char || '?') : '空';
+      const sign = points >= 0 ? '+' : '';
+      gmSysLine(`* ${by} 在 ${Math.round(angleDeg)}° 放钩 -> ${charish} (${sign}${points})`);
+      redrawGoldminerInPlace();
+    }
+    return;
+  }
+
+  if (g.action === 'turn-end') {
+    if (goldminer.status !== 'playing') return;
+    if (by !== goldminer.players[goldminer.currentIdx]) return; // dedupe
+    // active player exiting; if it's me, kill the animation + deadline timer
+    if (by === NAME) {
+      if (mode === 'goldminer-aim') exitGoldminerAim(false, null, /*alreadySent=*/true);
+      clearGoldminerTurnTimer();
+    }
+    clearGoldminerInterval();
+    goldminer.currentIdx++;
+    if (goldminer.currentIdx >= goldminer.players.length) {
+      goldminer.status = 'finished';
+      if (!silent) {
+        gmSysLine(`* 黄金矿工: 全员收工`);
+        printGoldminerBoard();
+        const ranking = [...goldminer.players].sort(
+          (a, b) => (goldminer.scores[b] || 0) - (goldminer.scores[a] || 0),
+        );
+        const summary = ranking
+          .map((n, i) => `${i + 1}. ${n} ${goldminer.scores[n] || 0}`)
+          .join('   ');
+        gmSysLine(`* 排行榜: ${summary}`);
+        // Keep state around briefly so /goldminer can be replayed; clear on next invite.
+      }
+    } else if (!silent) {
+      const next = goldminer.players[goldminer.currentIdx];
+      gmSysLine(`* 轮到 ${next}（30s）`);
+      redrawGoldminerInPlace();
+      beginLocalTurnIfActive();
+    }
+    return;
+  }
+}
+
+function replayGoldminerFromHistory(messages) {
+  clearGoldminerInterval();
+  goldminer = null;
+  const sorted = messages
+    .filter((m) => m && m.game && m.game.kind === 'goldminer' && Number.isFinite(m.id))
+    .sort((a, b) => a.id - b.id);
+  for (const m of sorted) applyGoldminerEvent(m, true);
+  if (goldminer) {
+    if (goldminer.status === 'pending') {
+      gmSysLine(`* 进行中: 黄金矿工等待 /start (${goldminer.players.length} 人)`);
+      printGoldminerBoard();
+    } else if (goldminer.status === 'playing') {
+      const cur = goldminer.players[goldminer.currentIdx];
+      gmSysLine(`* 黄金矿工进行中，轮到 ${cur}`);
+      printGoldminerBoard();
+      beginLocalTurnIfActive();
+    } else if (goldminer.status === 'finished') {
+      printGoldminerBoard();
+    }
+  }
+}
+// --- goldminer aim mode (active player only) ---
+function beginLocalTurnIfActive() {
+  if (!goldminer || goldminer.status !== 'playing') return;
+  const cur = goldminer.players[goldminer.currentIdx];
+  if (cur !== NAME) return;
+  // Set the hard deadline once per turn; lives across aim enter/exit so
+  // accidentally exiting aim mode does not reset the 30s window.
+  clearGoldminerTurnTimer();
+  goldminer.turnEndsAt = Date.now() + TURN_MS;
+  goldminerTurnTimer = setTimeout(() => {
+    goldminerTurnTimer = null;
+    if (!goldminer || goldminer.status !== 'playing') return;
+    if (goldminer.players[goldminer.currentIdx] !== NAME) return;
+    if (mode === 'goldminer-aim') exitGoldminerAim(false, null, /*alreadySent=*/true);
+    sendGame({ kind: 'goldminer', action: 'turn-end', gameId: goldminer.gameId });
+  }, TURN_MS);
+  // Defer so that any pending render finishes first
+  setTimeout(() => {
+    if (!goldminer || goldminer.status !== 'playing') return;
+    if (goldminer.players[goldminer.currentIdx] !== NAME) return;
+    if (mode === 'normal') enterGoldminerAim();
+  }, 50);
+}
+
+function enterGoldminerAim() {
+  if (!goldminer || goldminer.status !== 'playing') return;
+  if (mode !== 'normal') return; // don't stack on top of other pickers
+  if (goldminer.players[goldminer.currentIdx] !== NAME) return;
+  // turnEndsAt is set by beginLocalTurnIfActive; don't overwrite it here.
+  goldminer.hook = {
+    phase: 'swing',
+    angle: 0,
+    length: 2.5,           // swing radius — visible across ~5 cells laterally
+    carrying: null,
+    swingStart: Date.now(),
+    descendTarget: null,
+    pendingPoints: 0,
+  };
+  // Make sure the board is on screen so in-place redraws work.
+  if (goldminer.lastBoardIdx == null || goldminer.lastBoardIdx >= rendered.length) {
+    printGoldminerBoard();
+  }
+  const rows = process.stdout.rows || 24;
+  if (rowsToTopOf(goldminer.lastBoardIdx) >= rows - 1) {
+    printGoldminerBoard();
+  }
+  // Erase the "/g" echo and any stray prompt below
+  process.stdout.write(UP_ONE + CLEAR_LINE + '\x1b[J');
+  mode = 'goldminer-aim';
+  savedKeypressListeners = process.stdin.listeners('keypress').slice();
+  process.stdin.removeAllListeners('keypress');
+  process.stdin.on('keypress', goldminerKeypress);
+  redrawGoldminerInPlace();
+  clearGoldminerInterval();
+  goldminerInterval = setInterval(goldminerTick, ANIM_INTERVAL_MS);
+}
+
+function exitGoldminerAim(broadcastTurnEnd, replayKey, alreadySent = false) {
+  clearGoldminerInterval();
+  if (mode !== 'goldminer-aim') return; // re-entrancy guard
+  process.stdin.removeListener('keypress', goldminerKeypress);
+  for (const l of savedKeypressListeners) process.stdin.on('keypress', l);
+  savedKeypressListeners = [];
+  mode = 'normal';
+  if (goldminer) goldminer.hook = null;
+  redrawGoldminerInPlace();
+  if (broadcastTurnEnd && !alreadySent && goldminer) {
+    clearGoldminerTurnTimer();
+    sendGame({ kind: 'goldminer', action: 'turn-end', gameId: goldminer.gameId });
+  }
+  while (incomingQueue.length) {
+    const item = incomingQueue.shift();
+    process.stdout.write(item.line + '\n');
+    trackRender(item.line, item.msg);
+  }
+  rl.setPrompt(PROMPT_NORMAL);
+  rl.prompt();
+  if (replayKey) {
+    process.stdin.emit('keypress', replayKey.s, replayKey.key);
+  }
+}
+
+function goldminerKeypress(s, key) {
+  if (!key || !goldminer) return;
+  if (key.name === 'return' || (key.name === 'space') || key.name === 'down') {
+    fireHook();
+    return;
+  }
+  if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
+    // 主动结束回合
+    exitGoldminerAim(true, null);
+    return;
+  }
+  // 其他按键不在 aim 里消费：退出 aim 但保留回合（30s 倒计时由独立 timer 管），
+  // 把按键回放给 readline，用户可以继续聊天 / 输入 /g 重进瞄准。
+  exitGoldminerAim(false, { s, key });
+}
+
+function fireHook() {
+  if (!goldminer || !goldminer.hook) return;
+  if (goldminer.hook.phase !== 'swing') return; // already firing
+  const angle = goldminer.hook.angle;
+  const result = gm.simulateShot(goldminer.map, angle);
+  // Compute final points (for shot); if no hit, 0.
+  const points = result.hitItem ? result.hitItem.points : 0;
+  // Switch to descend phase. The reducer will deduct/add when our broadcast echoes back.
+  goldminer.hook.phase = 'descend';
+  goldminer.hook.angle = angle;
+  goldminer.hook.descendTarget = result;
+  goldminer.hook.pendingPoints = points;
+  sendGame({
+    kind: 'goldminer',
+    action: 'shot',
+    gameId: goldminer.gameId,
+    angleDeg: angle,
+    hitId: result.hitId,
+    points,
+  });
+}
+
+function goldminerTick() {
+  if (!goldminer || mode !== 'goldminer-aim') {
+    clearGoldminerInterval();
+    return;
+  }
+  const now = Date.now();
+  // Time check
+  if (goldminer.turnEndsAt && now >= goldminer.turnEndsAt) {
+    exitGoldminerAim(true, null);
+    return;
+  }
+  const hook = goldminer.hook;
+  if (!hook) return;
+  if (hook.phase === 'swing') {
+    hook.angle = gm.swingAngleAt(now - hook.swingStart);
+  } else if (hook.phase === 'descend') {
+    const target = hook.descendTarget;
+    const targetDist = target && target.hitId ? target.distance : Math.max(target?.distance || 0, gm.MAP_H);
+    hook.length += (gm.HOOK_DESCEND_CELLS_PER_SEC * ANIM_INTERVAL_MS) / 1000;
+    if (hook.length >= targetDist) {
+      hook.length = targetDist;
+      hook.carrying = target && target.hitItem ? { kind: target.hitItem.kind } : null;
+      hook.phase = 'retract';
+      hook.retractCellsPerSec = target && target.hitItem
+        ? (gm.HOOK_DESCEND_CELLS_PER_SEC * 1000) / Math.max(300, target.hitItem.retractMs)
+        : gm.HOOK_RETRACT_EMPTY_CELLS_PER_SEC;
+    }
+  } else if (hook.phase === 'retract') {
+    hook.length -= (hook.retractCellsPerSec * ANIM_INTERVAL_MS) / 1000;
+    if (hook.length <= 2.5) {
+      hook.length = 2.5;
+      hook.carrying = null;
+      hook.descendTarget = null;
+      hook.phase = 'swing';
+      hook.swingStart = now;
+      hook.pendingPoints = 0;
+    }
+  }
+  redrawGoldminerInPlace();
+}
+// =================== /goldminer ===================
+
 rl.on('line', (raw) => {
   const content = raw.trim();
 
@@ -949,17 +1347,27 @@ rl.on('line', (raw) => {
     return;
   }
   if (content === '/join') {
-    if (!chess || chess.status !== 'pending') {
-      printIncoming(`${DIM}* 没有等待加入的五子棋${RESET}`);
+    if (chess && chess.status === 'pending') {
+      if (chess.black === NAME) {
+        printIncoming(`${DIM}* 你是发起者，不用 /join${RESET}`);
+        rl.prompt();
+        return;
+      }
+      sendGame({ kind: 'chess', action: 'join', gameId: chess.gameId });
       rl.prompt();
       return;
     }
-    if (chess.black === NAME) {
-      printIncoming(`${DIM}* 你是发起者，不用 /join${RESET}`);
+    if (goldminer && goldminer.status === 'pending') {
+      if (goldminer.players.includes(NAME)) {
+        printIncoming(`${DIM}* 你已经在矿场了${RESET}`);
+        rl.prompt();
+        return;
+      }
+      sendGame({ kind: 'goldminer', action: 'join', gameId: goldminer.gameId });
       rl.prompt();
       return;
     }
-    sendGame({ kind: 'chess', action: 'join', gameId: chess.gameId });
+    printIncoming(`${DIM}* 没有等待加入的对局${RESET}`);
     rl.prompt();
     return;
   }
@@ -997,8 +1405,57 @@ rl.on('line', (raw) => {
     rl.prompt();
     return;
   }
+
+  // 黄金矿工命令
+  if (content === '/goldminer' || content === '/gm') {
+    if (goldminer && goldminer.status !== 'finished') {
+      printIncoming(`${DIM}* 已经有一局黄金矿工在进行（${goldminer.status}）${RESET}`);
+      rl.prompt();
+      return;
+    }
+    const seed = (Math.random() * 0x100000000) >>> 0;
+    sendGame({ kind: 'goldminer', action: 'invite', gameId: 0, seed });
+    rl.prompt();
+    return;
+  }
+  if (content === '/start') {
+    if (!goldminer || goldminer.status !== 'pending') {
+      printIncoming(`${DIM}* 没有等待开始的黄金矿工${RESET}`);
+      rl.prompt();
+      return;
+    }
+    if (goldminer.players[0] !== NAME) {
+      printIncoming(`${DIM}* 只有发起者能 /start${RESET}`);
+      rl.prompt();
+      return;
+    }
+    sendGame({ kind: 'goldminer', action: 'start', gameId: goldminer.gameId });
+    rl.prompt();
+    return;
+  }
+  if (content === '/g' || content === '/aim') {
+    if (!goldminer || goldminer.status !== 'playing') {
+      printIncoming(`${DIM}* 没有进行中的黄金矿工${RESET}`);
+      rl.prompt();
+      return;
+    }
+    if (goldminer.players[goldminer.currentIdx] !== NAME) {
+      const cur = goldminer.players[goldminer.currentIdx];
+      printIncoming(`${DIM}* 还没轮到你（当前: ${cur}）${RESET}`);
+      rl.prompt();
+      return;
+    }
+    if (mode === 'goldminer-aim') {
+      rl.prompt();
+      return;
+    }
+    enterGoldminerAim();
+    return;
+  }
   if (content === '/help' || content === '/?') {
-    printIncoming(`${DIM}* 命令: /chess /join /m /resign /cancel | /r 引用 | /cowsay | /new | /clear${RESET}`);
+    printIncoming(`${DIM}* 命令: /chess /join /m /resign /cancel${RESET}`);
+    printIncoming(`${DIM}*       /goldminer /start /g（瞄准：Return 放钩，Esc 结束回合）${RESET}`);
+    printIncoming(`${DIM}*       /r 引用 | /cowsay | /new | /clear${RESET}`);
     rl.prompt();
     return;
   }
@@ -1079,6 +1536,8 @@ process.stdin.on('keypress', (_, key) => {
 
 rl.on('close', () => {
   stopped = true;
+  clearGoldminerInterval();
+  clearGoldminerTurnTimer();
   if (ws && ws.readyState === WebSocket.OPEN) ws.close();
   if (serverProcess) {
     try { serverProcess.kill('SIGTERM'); } catch {}
