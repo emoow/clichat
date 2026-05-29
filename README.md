@@ -92,13 +92,42 @@ The default name is your system username.
 
 ## In-chat commands
 
-| Action | What it does |
+Type `/help` at any prompt to print the full command list.
+
+| Command / Key | What it does |
 | --- | --- |
 | Type text + Enter | Send a message |
-| `Ctrl+L` | Clear the screen |
-| `/clear` `/refresh` `/404` | Same as Ctrl+L |
+| `/help` `/?` | Print the full command list |
+| `/r` `/reply` | Pick a message with arrow keys, Enter to quote it |
+| `/cowsay <text>` | Wrap a line in an ASCII cow speech bubble |
 | `/new` | Spin up a fresh local server and jump to a random room |
+| `/clear` `/refresh` `/404` `Ctrl+L` | Clear the screen |
 | `Ctrl+C` | Quit |
+
+### Built-in games
+
+Both games run over the encrypted channel with pure ASCII rendering. No extra dependencies.
+
+**Gomoku / Five-in-a-Row (2 players)**
+
+| Command | What it does |
+| --- | --- |
+| `/chess` | Invite an opponent |
+| `/join` | Accept a pending invite |
+| `/m` `/move` | Aim mode: arrow keys to move the cursor, Enter to drop a stone |
+| `/resign` | Concede the match |
+| `/cancel` | Cancel a pending invite (host only) |
+
+**Gold Miner (multi-player relay)**
+
+| Command | What it does |
+| --- | --- |
+| `/goldminer` `/gm` | Start a session — the map is seeded so every client sees the same one |
+| `/join` | Join a pending session |
+| `/start` | Host starts the game |
+| `/g` `/aim` | Aim mode: hook swings, press Enter to drop, Esc to end the turn |
+
+Each player gets a 30-second turn to hook gold / stones / diamonds for points. After everyone has had one turn the leaderboard auto-prints. Typing letters while aiming drops you back to the chat prompt without ending the turn — re-enter aim with `/g`.
 
 If the connection drops, the client retries up to 5 times with exponential backoff before giving up.
 

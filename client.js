@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { encrypt, decrypt, parsePskFromUrl } from './crypto.js';
 import * as gm from './games/goldminer.js';
+import { t, setLocale, getLocale, availableLocales } from './i18n.js';
 
 function parseArgs(argv) {
   const out = {};
@@ -294,7 +295,7 @@ function connect() {
   ws.on('open', () => {
     attempt = 0;
     printIncoming(`${DIM}* 已落入 404 页面「${ROOM}」，代号 ${NAME}${RESET}`);
-    printIncoming(`${DIM}* 文字回车发送 | /r 引用 | /cowsay | /chess 五子棋 | /goldminer 黄金矿工 | /help${RESET}`);
+    printIncoming(`${DIM}* 文字回车发送 | /chess 五子棋 | /goldminer 黄金矿工 | ${CYAN}/help${RESET}${DIM} 看全部命令${RESET}`);
     // 从本地历史恢复进行中的游戏（应付服务端没下发 history 的场景）
     try {
       const localPast = loadLocalHistory(ROOM);
@@ -1484,9 +1485,51 @@ rl.on('line', (raw) => {
     return;
   }
   if (content === '/help' || content === '/?') {
-    printIncoming(`${DIM}* 命令: /chess /join /m /resign /cancel${RESET}`);
-    printIncoming(`${DIM}*       /goldminer /start /g（瞄准：Return 放钩，Esc 结束回合）${RESET}`);
-    printIncoming(`${DIM}*       /r 引用 | /cowsay | /new | /clear${RESET}`);
+    const HELP = [
+      ['', t('help.header')],
+      ['/help  /?',       t('help.cmd.help')],
+      ['/r  /reply',      t('help.cmd.reply')],
+      ['/cowsay <text>',  t('help.cmd.cowsay')],
+      ['/new',            t('help.cmd.new')],
+      ['/clear  /404',    t('help.cmd.clear')],
+      ['/language <zh|en>', t('help.cmd.language')],
+      ['', t('help.section.chess')],
+      ['/chess',          t('help.cmd.chess')],
+      ['/join',           t('help.cmd.join')],
+      ['/m  /move',       t('help.cmd.move')],
+      ['/resign',         t('help.cmd.resign')],
+      ['/cancel',         t('help.cmd.cancel')],
+      ['', t('help.section.goldminer')],
+      ['/goldminer  /gm', t('help.cmd.goldminer')],
+      ['/start',          t('help.cmd.start')],
+      ['/g  /aim',        t('help.cmd.aim')],
+      ['', t('help.section.misc')],
+      ['Ctrl+L',          t('help.cmd.ctrl_l')],
+      ['Ctrl+C',          t('help.cmd.ctrl_c')],
+    ];
+    for (const [cmd, desc] of HELP) {
+      if (!cmd) {
+        printIncoming(`${DIM}* ${desc}${RESET}`);
+      } else {
+        printIncoming(`${DIM}*  ${CYAN}${cmd.padEnd(20)}${RESET}${DIM} ${desc}${RESET}`);
+      }
+    }
+    rl.prompt();
+    return;
+  }
+  if (content === '/language' || content.startsWith('/language ') || content === '/lang' || content.startsWith('/lang ')) {
+    const arg = content.replace(/^\/(language|lang)\s*/, '').trim();
+    if (!arg) {
+      printIncoming(`${DIM}* ${t('language.usage')} (current: ${getLocale()})${RESET}`);
+      rl.prompt();
+      return;
+    }
+    if (!setLocale(arg)) {
+      printIncoming(`${DIM}* ${t('language.invalid', { locale: arg, available: availableLocales().join(', ') })}${RESET}`);
+      rl.prompt();
+      return;
+    }
+    printIncoming(`${DIM}* ${t('language.set', { locale: arg })}${RESET}`);
     rl.prompt();
     return;
   }
