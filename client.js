@@ -684,7 +684,11 @@ function renderChessBoard(g, cursor) {
     footer = `${blackTag}  vs  ${whiteTag}     ${DIM}/join 加入${RESET}`;
   } else if (g.status === 'playing') {
     const turnName = g.turn === 'black' ? `${STONE_BLACK} ${g.black}` : `${STONE_WHITE} ${g.white}`;
-    footer = `${blackTag}  vs  ${whiteTag}     轮到 ${turnName}`;
+    if (g.matchPoint) {
+      footer = `${blackTag}  vs  ${whiteTag}     ${CYAN}赛点${RESET}：${turnName} 须成五连扳平`;
+    } else {
+      footer = `${blackTag}  vs  ${whiteTag}     轮到 ${turnName}`;
+    }
   } else {
     let result;
     if (g.winner) {
@@ -803,10 +807,33 @@ function applyGameEvent(msg, silent = false) {
     chess.board[idxOf(x, y)] = expectedColor;
     chess.moves.push({ x, y, by, id });
     const win = checkWin(chess.board, x, y, expectedColor);
-    if (win) {
-      chess.winner = by;
-      chess.winLine = win;
+    let enteredMatchPoint = false;
+    let drawByMatchPoint = false;
+    if (chess.matchPoint) {
+      // 赛点：白棋的扳平回合。白也成五 → 平局；否则黑胜（用之前记下的 pendingWinLine）
+      if (win) {
+        chess.winLine = win;
+        drawByMatchPoint = true;
+      } else {
+        chess.winner = chess.black;
+        chess.winLine = chess.pendingWinLine;
+      }
+      chess.matchPoint = false;
+      chess.pendingWinLine = null;
       chess.status = 'finished';
+    } else if (win) {
+      if (expectedColor === COLOR_BLACK) {
+        // 黑成五，进入赛点：留住胜利线，让白再下一手
+        chess.matchPoint = true;
+        chess.pendingWinLine = win;
+        chess.turn = 'white';
+        chess.cursor = { x, y };
+        enteredMatchPoint = true;
+      } else {
+        chess.winner = by;
+        chess.winLine = win;
+        chess.status = 'finished';
+      }
     } else if (chess.moves.length >= BOARD_CELLS) {
       chess.status = 'finished';
     } else {
@@ -820,8 +847,11 @@ function applyGameEvent(msg, silent = false) {
       const coord = `${COL_LABELS[x]}${y + 1}`;
       sysLine(`* ${stone} ${by} 落子 ${coord}`);
       printChessBoard();
-      if (chess.status === 'finished') {
-        if (chess.winner) sysLine(`* 五子棋: ${chess.winner} 胜！`);
+      if (enteredMatchPoint) {
+        sysLine(`* ${CYAN}赛点${RESET}：${chess.black} 已成五，${chess.white} 下一手若也成五即平局`);
+      } else if (chess.status === 'finished') {
+        if (drawByMatchPoint) sysLine(`* 五子棋: ${chess.white} 也成五，平局！`);
+        else if (chess.winner) sysLine(`* 五子棋: ${chess.winner} 胜！`);
         else sysLine(`* 五子棋: 平局`);
         chess = null;
       }
@@ -867,7 +897,8 @@ function replayChessFromHistory(messages) {
     } else if (chess.status === 'playing') {
       printChessBoard();
       const turnName = chess.turn === 'black' ? chess.black : chess.white;
-      sysLine(`* 五子棋进行中，轮到 ${turnName}`);
+      if (chess.matchPoint) sysLine(`* 五子棋赛点：${turnName} 须成五连扳平`);
+      else sysLine(`* 五子棋进行中，轮到 ${turnName}`);
     } else if (chess.status === 'finished') {
       printChessBoard();
       if (chess.winner) sysLine(`* 上一局: ${chess.winner} 胜`);
