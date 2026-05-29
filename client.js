@@ -134,6 +134,8 @@ const rl = readline.createInterface({
 function printIncoming(line, msg) {
   if (mode === 'picker' || mode === 'chess-picker') {
     incomingQueue.push({ line, msg });
+    // chess-picker 期间消息只是排队，刷一下棋盘 footer 把数量亮出来
+    if (mode === 'chess-picker') redrawBoardInPlace();
     return;
   }
   process.stdout.write(CLEAR_LINE + line + '\n');
@@ -420,7 +422,14 @@ function trackRender(formatted, msg) {
     entry.content = msg.content;
   }
   rendered.push(entry);
-  if (rendered.length > RENDERED_LIMIT) rendered.shift();
+  if (rendered.length > RENDERED_LIMIT) {
+    rendered.shift();
+    // rendered 滚动后，缓存的索引也要一起左移，否则 redrawBoardInPlace 会更新错位置
+    if (chess && typeof chess.lastBoardIdx === 'number') {
+      chess.lastBoardIdx--;
+      if (chess.lastBoardIdx < 0) chess.lastBoardIdx = null;
+    }
+  }
 }
 
 function markLastAsPendingOwn(content) {
@@ -661,6 +670,9 @@ function renderChessBoard(g, cursor) {
     }
     footer = `${blackTag}  vs  ${whiteTag}     ${result}`;
   }
+  // picker 占着屏幕时把排队消息数挂在 footer 上，避免对方以为消息被吞了
+  const queued = mode === 'chess-picker' ? incomingQueue.length : 0;
+  if (queued > 0) footer += `   ${CYAN}📨 ${queued} 条新消息（落子后展开）${RESET}`;
   lines.push('');
   lines.push(footer);
   return lines.join('\n');
@@ -867,7 +879,7 @@ function enterChessPicker() {
   redrawBoardInPlace();
 }
 
-function exitChessPicker(confirmed) {
+function exitChessPicker(confirmed, replayKey) {
   process.stdin.removeListener('keypress', chessPickerKeypress);
   for (const l of savedKeypressListeners) process.stdin.on('keypress', l);
   savedKeypressListeners = [];
@@ -885,15 +897,23 @@ function exitChessPicker(confirmed) {
   }
   rl.setPrompt(PROMPT_NORMAL);
   rl.prompt();
+  // 把吃掉的那次按键还给 readline，避免用户输入被默默丢掉
+  if (replayKey) {
+    process.stdin.emit('keypress', replayKey.s, replayKey.key);
+  }
 }
 
-function chessPickerKeypress(_, key) {
+function chessPickerKeypress(s, key) {
   if (!key || !chess) return;
   const c = chess.cursor;
-  if (key.name === 'up' && c.y > 0) { c.y--; redrawBoardInPlace(); return; }
-  if (key.name === 'down' && c.y < BOARD_SIZE - 1) { c.y++; redrawBoardInPlace(); return; }
-  if (key.name === 'left' && c.x > 0) { c.x--; redrawBoardInPlace(); return; }
-  if (key.name === 'right' && c.x < BOARD_SIZE - 1) { c.x++; redrawBoardInPlace(); return; }
+  if (key.name === 'up' || key.name === 'down' || key.name === 'left' || key.name === 'right') {
+    if (key.name === 'up' && c.y > 0) c.y--;
+    else if (key.name === 'down' && c.y < BOARD_SIZE - 1) c.y++;
+    else if (key.name === 'left' && c.x > 0) c.x--;
+    else if (key.name === 'right' && c.x < BOARD_SIZE - 1) c.x++;
+    redrawBoardInPlace();
+    return;
+  }
   if (key.name === 'return') {
     if (chess.board[idxOf(c.x, c.y)] !== 0) return; // occupied: ignore
     exitChessPicker(true);
@@ -903,6 +923,8 @@ function chessPickerKeypress(_, key) {
     exitChessPicker(false);
     return;
   }
+  // 其他按键不在 picker 里消费：退出 picker 并把这次按键交还给 readline
+  exitChessPicker(false, { s, key });
 }
 // =================== /chess ===================
 
